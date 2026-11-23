@@ -416,7 +416,7 @@ enum MaxMediaKind: String { case photo, video, file }
         }
         return '';
       };
-      const mediaFromAttach = attach => {
+      const mediaFromAttach = (attach, message, chat) => {
         if (!attach || typeof attach !== 'object') return null;
         const type = asString(attach._type);
         if (type === 'PHOTO') {
@@ -432,7 +432,12 @@ enum MaxMediaKind: String { case photo, video, file }
         }
         if (type === 'FILE') {
           const url = urlOf(attach.url || attach.baseUrl || attach.previewUrl);
-          return url ? {kind: 'file', url: url} : null;
+          if (url) return {kind: 'file', url: url};
+          const fileId = bigintOrNull(attach.fileId ?? attach.id);
+          if (fileId !== null) {
+            return {kind: 'file', fileId: fileId.toString(), chatId: asString(chat), messageId: asString(message && message.id)};
+          }
+          return null;
         }
         return null;
       };
@@ -440,19 +445,32 @@ enum MaxMediaKind: String { case photo, video, file }
         const out = [];
         for (const item of items) {
           if (item.kind === 'photo') { out.push({kind: 'photo', url: item.url}); continue; }
+          if (item.kind === 'file' && item.url) { out.push({kind: 'file', url: item.url}); continue; }
           try {
-            const payload = await request(83, {
-              videoId: bigintOrNull(item.videoId),
-              token: item.token,
-              chatId: bigintOrNull(chat),
-              postId: 0n,
-              messageId: bigintOrNull(messageId)
-            });
-            const url = urlOf(payload && (payload.MP4_720 || payload.MP4_480 || payload.MP4_360 || payload.MP4_240 || payload.MP4_144 || payload.DASH || payload.HLS || payload.EXTERNAL));
-            if (url) out.push({kind: 'video', url: url});
-            else post({kind:'debug', stage:'media', error:'video url missing'});
+            if (item.kind === 'video') {
+              const payload = await request(83, {
+                videoId: bigintOrNull(item.videoId),
+                token: item.token,
+                chatId: bigintOrNull(chat),
+                postId: 0n,
+                messageId: bigintOrNull(messageId)
+              });
+              const url = urlOf(payload && (payload.MP4_720 || payload.MP4_480 || payload.MP4_360 || payload.MP4_240 || payload.MP4_144 || payload.DASH || payload.HLS || payload.EXTERNAL));
+              if (url) out.push({kind: 'video', url: url});
+              else post({kind:'debug', stage:'media', error:'video url missing'});
+            } else if (item.kind === 'file') {
+              const payload = await request(88, {
+                fileId: bigintOrNull(item.fileId),
+                chatId: bigintOrNull(item.chatId || chat),
+                messageId: bigintOrNull(item.messageId || messageId),
+                itemType: 'REGULAR'
+              });
+              const url = urlOf(payload && payload.url);
+              if (url) out.push({kind: 'file', url: url});
+              else post({kind:'debug', stage:'media', error:'file url missing'});
+            }
           } catch (_) {
-            post({kind:'debug', stage:'media', error:'video url failed'});
+            post({kind:'debug', stage:'media', error:'media url failed'});
           }
         }
         return out;
@@ -602,7 +620,7 @@ enum MaxMediaKind: String { case photo, video, file }
         const text = asString(m.text || m.caption || '');
         if (text.includes(marker) || text.includes('\u2063семейный-мост\u2063')) return;
         const raw = Array.isArray(m.attaches) ? m.attaches : (Array.isArray(m.attachments) ? m.attachments : []);
-        const rawMedia = raw.map(mediaFromAttach).filter(Boolean);
+        const rawMedia = raw.map(a => mediaFromAttach(a, m, chat)).filter(Boolean);
         if (!text && !rawMedia.length) return;
         const initialSender = senderName(m);
         const senderId = asString((m && m.sender && typeof m.sender === 'object')
@@ -613,10 +631,6 @@ enum MaxMediaKind: String { case photo, video, file }
             if (!text && !media.length) return;
             post({kind:'message', chat:chat, id:id, sender:sender, text:text, media:media});
           };
-          if (!rawMedia.some(item => item.kind === 'video')) {
-            finish(rawMedia.filter(item => item.kind === 'photo').map(item => ({kind:'photo', url:item.url})));
-            return;
-          }
           resolveMedia(rawMedia, chat, id).then(finish).catch(() => {});
         };
         if (initialSender === 'Участник MAX' && /^-?\d+$/.test(senderId)) {

@@ -45,6 +45,7 @@ const message = (chat, text, time=2000, extra={}) => { const id = (message.next 
   assert.equal(relayReceived().at(-1).kind,'ready');
   assert.equal(relayReceived().at(-1).groups.length,1);
   message('-100','от участника')();
+  await new Promise(r => setTimeout(r, 0));
   assert.equal(relayReceived().at(-1).sender,'Анна', 'MAX sender must use the contact name from login');
   message('-100','от неизвестного',2000,{sender:999})();
   await new Promise(r => setTimeout(r, 2200));
