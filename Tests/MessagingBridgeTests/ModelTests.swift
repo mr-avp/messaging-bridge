@@ -3,6 +3,25 @@ import XCTest
 
 @MainActor
 final class ModelTests: XCTestCase {
+    private var savedConnections: Data?
+    private var savedLegacyConnections: Data?
+
+    override func setUp() {
+        super.setUp()
+        let defaults = UserDefaults.standard
+        savedConnections = defaults.data(forKey: "messaging-bridge.connections")
+        savedLegacyConnections = defaults.data(forKey: "family-relay.connections")
+        defaults.removeObject(forKey: "messaging-bridge.connections")
+        defaults.removeObject(forKey: "family-relay.connections")
+    }
+
+    override func tearDown() {
+        let defaults = UserDefaults.standard
+        if let savedConnections { defaults.set(savedConnections, forKey: "messaging-bridge.connections") }
+        if let savedLegacyConnections { defaults.set(savedLegacyConnections, forKey: "family-relay.connections") }
+        super.tearDown()
+    }
+
     func testMaxLoadsOfficialWebClient() {
         XCTAssertEqual(MaxWeb.endpoint.absoluteString, "https://web.max.ru",
                        "The panel must load the official MAX web client, not a placeholder")

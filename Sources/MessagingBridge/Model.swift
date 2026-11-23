@@ -337,8 +337,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     private func loadConnections() {
         let defaults = UserDefaults.standard
+        let isTest = NSClassFromString("XCTest") != nil
+        let legacyDefaults = isTest ? nil : UserDefaults(suiteName: "local.family-relay")
+        let oldPlist = NSHomeDirectory() + "/Library/Preferences/local.family-relay.plist"
+        let plistConnections = isTest ? nil : (NSDictionary(contentsOfFile: oldPlist)?["family-relay.connections"] as? Data)
         let data = defaults.data(forKey: "messaging-bridge.connections")
-            ?? defaults.data(forKey: "family-relay.connections")
+            ?? (!isTest ? defaults.data(forKey: "family-relay.connections") : nil)
+            ?? legacyDefaults?.data(forKey: "family-relay.connections")
+            ?? plistConnections
         guard let data, let decoded = try? JSONDecoder().decode([BridgeConnection].self, from: data) else { return }
         if defaults.data(forKey: "messaging-bridge.connections") == nil {
             defaults.set(data, forKey: "messaging-bridge.connections")

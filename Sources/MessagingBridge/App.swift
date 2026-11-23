@@ -3,10 +3,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.showWindow()
-            NSApp.setActivationPolicy(.accessory)
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showWindow() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func showWindow() {
@@ -24,7 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func toggleWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
-        if window.isVisible { window.orderOut(nil) } else { showWindow() }
+        if window.isVisible {
+            window.orderOut(nil)
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+            showWindow()
+        }
     }
 }
 
