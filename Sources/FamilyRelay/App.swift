@@ -1,6 +1,23 @@
 import SwiftUI
+import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func toggleWindow() {
+        guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
+        if window.isVisible {
+            window.orderOut(nil)
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
 
 @main struct FamilyRelayApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = Model()
     var body: some Scene {
         WindowGroup("Мост сообщений (Messaging Bridge)") {
@@ -65,6 +82,13 @@ import SwiftUI
                 MaxPanel(web: model.max).frame(minWidth: 680, minHeight: 760)
             }.frame(minWidth: 1240, minHeight: 820)
             .task { await model.restoreAndConnect() }
+        }
+        MenuBarExtra {
+            Button("Показать / скрыть окно") { appDelegate.toggleWindow() }
+            Divider()
+            Button("Выйти") { NSApp.terminate(nil) }
+        } label: {
+            Image("TrayIcon").renderingMode(.original)
         }
     }
 }

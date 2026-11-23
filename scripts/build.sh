@@ -6,6 +6,7 @@ bin_dir=$(swift build -c release --show-bin-path)
 app="$PWD/dist/FamilyRelay.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/FamilyRelay" "$app/Contents/MacOS/FamilyRelay"
+cp -R "$bin_dir/FamilyRelay_FamilyRelay.bundle" "$app/Contents/Resources/"
 cp "$PWD/Resources/MessagingBridge.icns" "$app/Contents/Resources/MessagingBridge.icns"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
