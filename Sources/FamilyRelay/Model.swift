@@ -149,6 +149,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         if maxID.isEmpty {
             maxID = groups.first?.id ?? ""
         }
+        updateConnectionTitles()
     }
     func refreshGroups() async {
         guard maxReady, !running, !busy else { return }
@@ -229,6 +230,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                 if !tgGroups.contains(where: { $0.id == group.id }) { tgGroups.append(group) }
                 if tgID.isEmpty { tgID = group.id }
             }
+            updateConnectionTitles()
             if tgGroups.isEmpty {
                 status = "Не вижу /family в группе. Проверено обновлений: \(updates.count). Последнее: \(lastSeen). Убедитесь, что бот добавлен в группу, privacy отключён, команда отправлена отдельным сообщением и токен не используется другим процессом."
             } else {
@@ -307,6 +309,27 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         connectionID = nil
         persistConnections()
     }
+    private func updateConnectionTitles() {
+        var changed = false
+        for index in connections.indices {
+            if let group = maxGroups.first(where: { $0.id == connections[index].maxID }), connections[index].maxTitle != group.title {
+                connections[index].maxTitle = group.title
+                changed = true
+            }
+            if let group = tgGroups.first(where: { $0.id == connections[index].tgID }), connections[index].tgTitle != group.title {
+                connections[index].tgTitle = group.title
+                changed = true
+            }
+            let maxTitle = connections[index].maxTitle ?? connections[index].maxID
+            let tgTitle = connections[index].tgTitle ?? connections[index].tgID
+            let newTitle = "\(maxTitle) ↔ \(tgTitle)"
+            if connections[index].title != newTitle {
+                connections[index].title = newTitle
+                changed = true
+            }
+        }
+        if changed { persistConnections() }
+    }
     private func persistConnections() {
         if let data = try? JSONEncoder().encode(connections) {
             UserDefaults.standard.set(data, forKey: "family-relay.connections")
@@ -327,6 +350,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             maxID = first.maxID
             tgID = first.tgID
         }
+        updateConnectionTitles()
     }
     func start() async {
         guard canStart, !running, let api = telegram else { return }
