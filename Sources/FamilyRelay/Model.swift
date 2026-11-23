@@ -202,11 +202,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         busy = true; defer { busy = false }
         do {
             let updates = try await api.updates(offset: offset, timeout: 0)
+            var lastSeen = "нет обновлений"
             for update in updates {
                 if let id = update["update_id"] as? Int { offset = maxInt(offset, id + 1) }
-                guard let message = update["message"] as? [String: Any],
-                      let text = message["text"] as? String,
-                      text == "/family" || text.hasPrefix("/family@"),
+                guard let message = update["message"] as? [String: Any] else { continue }
+                let text = message["text"] as? String ?? ""
+                let chatType = (message["chat"] as? [String: Any])?["type"] as? String ?? "?"
+                lastSeen = "«\(text)» в \(chatType)"
+                guard text == "/family" || text.hasPrefix("/family@"),
                       let chat = message["chat"] as? [String: Any],
                       ["group", "supergroup"].contains(chat["type"] as? String ?? ""),
                       let id = chat["id"] as? NSNumber else { continue }
@@ -214,7 +217,11 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                 if !tgGroups.contains(where: { $0.id == group.id }) { tgGroups.append(group) }
                 if tgID.isEmpty { tgID = group.id }
             }
-            status = tgGroups.isEmpty ? "Пока не вижу /family в группе. Отправьте команду и повторите поиск." : "Выберите две группы и включите мост. Старая переписка переноситься не будет."
+            if tgGroups.isEmpty {
+                status = "Не вижу /family в группе. Проверено обновлений: \(updates.count). Последнее: \(lastSeen). Убедитесь, что бот добавлен в группу, privacy отключён, команда отправлена отдельным сообщением и токен не используется другим процессом."
+            } else {
+                status = "Выберите две группы и включите мост. Старая переписка переноситься не будет."
+            }
         } catch { status = "Не удалось найти группу. Проверьте сеть и убедитесь, что бот не запущен в другом сервисе." }
     }
     private static func telegramName(_ from: [String: Any]) -> String {
