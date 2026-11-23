@@ -82,9 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Spacer()
                     Text("Только новые сообщения: текст, фото и видео, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в локальном хранилище приложения. Тексты сообщений не пишутся в логи.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }.padding(20).frame(minWidth: 470, idealWidth: 520, maxWidth: 620)
-                MaxPanel(web: model.max).frame(minWidth: 680, minHeight: 760)
-            }.frame(minWidth: 1240, minHeight: 820)
+                }.padding(20).frame(minWidth: 380)
+                MaxPanel(web: model.max).frame(minWidth: 420, minHeight: 500)
+            }.frame(minWidth: 900, minHeight: 600)
             .task { await model.restoreAndConnect() }
         }
         MenuBarExtra {

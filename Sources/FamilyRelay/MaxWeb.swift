@@ -728,14 +728,11 @@ struct MaxPanel: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let view = web.view
         web.autoLoad()
-        view.frame = NSRect(x: 0, y: 0, width: 960, height: 720)
+        view.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
         view.autoresizingMask = [.width, .height]
         return view
     }
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        if nsView.frame.size.width < 1 || nsView.frame.size.height < 1 {
-            nsView.frame.size = NSSize(width: 960, height: 720)
-        }
         nsView.autoresizingMask = [.width, .height]
     }
 }
