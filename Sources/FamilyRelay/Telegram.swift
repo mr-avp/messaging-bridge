@@ -81,6 +81,47 @@ final class Telegram {
         _ = try await callWithRetry(method, payload)
     }
 
+    func sendDocument(chat: String, data: Data, fileName: String, caption: String = "") async throws {
+        var attempt = 0
+        while true {
+            do {
+                let boundary = UUID().uuidString
+                var body = Data()
+                func appendField(_ name: String, _ value: String) {
+                    body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                    body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+                    body.append("\(value)\r\n".data(using: .utf8)!)
+                }
+                appendField("chat_id", chat)
+                if !caption.isEmpty { appendField("caption", String(caption.prefix(1024))); appendField("parse_mode", "HTML") }
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"document\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+                body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+                body.append(data)
+                body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+                guard let url = URL(string: "https://api.telegram.org/bot\(token)/sendDocument") else { throw RelayError.configuration }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                request.httpBody = body
+                let (responseData, response) = try await session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let json = (try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any]
+                guard status == 200, json?["ok"] as? Bool == true else {
+                    let detail = json?["description"] as? String ?? "HTTP \(status)"
+                    let params = json?["parameters"] as? [String: Any]
+                    let retry = (params?["retry_after"] as? Int).map { TimeInterval($0) }
+                    throw TelegramError(method: "sendDocument", code: (json?["error_code"] as? Int) ?? status, detail: detail, retryAfter: retry)
+                }
+                return
+            } catch let error as TelegramError where error.code == 429 && attempt < 4 {
+                attempt += 1
+                let wait = max(1, error.retryAfter ?? TimeInterval(attempt * 2))
+                try await Task.sleep(for: .seconds(wait))
+            }
+        }
+    }
+
     func downloadFile(fileID: String) async throws -> Data {
         let result = try await callWithRetry("getFile", ["file_id": fileID])
         guard let path = (result as? [String: Any])?["file_path"] as? String, !path.isEmpty else { throw RelayError.api }

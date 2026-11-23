@@ -432,10 +432,11 @@ enum MaxMediaKind: String { case photo, video, file }
         }
         if (type === 'FILE') {
           const url = urlOf(attach.url || attach.baseUrl || attach.previewUrl);
-          if (url) return {kind: 'file', url: url};
+          const name = asString(attach.name);
+          if (url) return {kind: 'file', url: url, name: name};
           const fileId = bigintOrNull(attach.fileId ?? attach.id);
           if (fileId !== null) {
-            return {kind: 'file', fileId: fileId.toString(), chatId: asString(chat), messageId: asString(message && message.id)};
+            return {kind: 'file', fileId: fileId.toString(), chatId: asString(chat), messageId: asString(message && message.id), name: name};
           }
           return null;
         }
@@ -445,7 +446,7 @@ enum MaxMediaKind: String { case photo, video, file }
         const out = [];
         for (const item of items) {
           if (item.kind === 'photo') { out.push({kind: 'photo', url: item.url}); continue; }
-          if (item.kind === 'file' && item.url) { out.push({kind: 'file', url: item.url}); continue; }
+          if (item.kind === 'file' && item.url) { out.push({kind: 'file', url: item.url, name: item.name}); continue; }
           try {
             if (item.kind === 'video') {
               const payload = await request(83, {
@@ -466,7 +467,7 @@ enum MaxMediaKind: String { case photo, video, file }
                 itemType: 'REGULAR'
               });
               const url = urlOf(payload && payload.url);
-              if (url) out.push({kind: 'file', url: url});
+              if (url) out.push({kind: 'file', url: url, name: item.name});
               else post({kind:'debug', stage:'media', error:'file url missing'});
             }
           } catch (_) {

@@ -9,7 +9,7 @@ struct BridgeConnection: Identifiable, Codable, Hashable {
     var title: String
 }
 enum RelayMediaKind: String { case photo, video, file }
-struct RelayMedia { let kind: RelayMediaKind; let url: String }
+struct RelayMedia { let kind: RelayMediaKind; let url: String; let name: String? }
 struct RelayMessage { let id: String; let chat: String; let sender: String; let text: String; let media: [RelayMedia] }
 @MainActor final class Model: ObservableObject {
     @Published var token = ""
@@ -38,6 +38,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var count = 0
     let max = MaxWeb()
     private var telegram: Telegram?
+    private let downloadSession = URLSession(configuration: .ephemeral)
     private var poll: Task<Void, Never>?
     private var deliver: Task<Void, Never>?
     private var queue: [RelayMessage] = []
@@ -121,7 +122,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             let media = ((data["media"] as? [[String: Any]]) ?? []).compactMap { item -> RelayMedia? in
                 guard let kind = (item["kind"] as? String).flatMap(RelayMediaKind.init(rawValue:)),
                       let url = item["url"] as? String, !url.isEmpty else { return nil }
-                return RelayMedia(kind: kind, url: url)
+                return RelayMedia(kind: kind, url: url, name: item["name"] as? String)
             }
             guard RelayPolicy.accept(chat: chat, allowed: maxID, text: text, hasMedia: !media.isEmpty),
                   seen.insert("max:\(id)").inserted else { return }
@@ -232,6 +233,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         if !full.isEmpty { return full }
         let username = from["username"] as? String ?? ""
         return username.isEmpty ? "Участник Telegram" : "@\(username)"
+    }
+    private func downloadData(from urlString: String) async throws -> Data {
+        guard let url = URL(string: urlString) else { throw RelayError.configuration }
+        let (data, response) = try await downloadSession.data(from: url)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard status == 200 else { throw RelayError.api }
+        return data
     }
     var canSaveConnection: Bool { maxGroups.contains(where: { $0.id == maxID }) && tgGroups.contains(where: { $0.id == tgID }) }
     var canStart: Bool { telegram != nil && maxReady && maxGroups.contains(where: {$0.id == maxID}) && tgGroups.contains(where: {$0.id == tgID}) && !busy }
@@ -349,8 +357,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                 for (index, media) in message.media.enumerated() {
                                     let label = index == 0 ? caption : ""
                                     do {
-                                        let tgKind: TelegramMediaKind = (media.kind == .photo) ? .photo : (media.kind == .video ? .video : .document)
-                                        try await api.sendMedia(chat: self.tgID, kind: tgKind, url: media.url, caption: label)
+                                        if media.kind == .file {
+                                            let data = try await self.downloadData(from: media.url)
+                                            try await api.sendDocument(chat: self.tgID, data: data, fileName: media.name ?? "document", caption: label)
+                                        } else {
+                                            let tgKind: TelegramMediaKind = (media.kind == .photo) ? .photo : .video
+                                            try await api.sendMedia(chat: self.tgID, kind: tgKind, url: media.url, caption: label)
+                                        }
                                     } catch {
                                         let fallback = label.isEmpty ? media.url : "\(caption)\n\(media.url)"
                                         try await api.send(chat: self.tgID, text: String(fallback.prefix(4000)))
