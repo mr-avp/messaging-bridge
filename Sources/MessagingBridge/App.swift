@@ -4,7 +4,7 @@ import AppKit
 private let trayIcon: NSImage = {
     let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "png")
     let image = url.flatMap { NSImage(contentsOf: $0) } ?? NSImage(size: NSSize(width: 22, height: 22))
-    image.isTemplate = true
+    image.isTemplate = false
     return image
 }()
 
