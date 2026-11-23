@@ -3,17 +3,20 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showWindow()
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    private func showWindow() {
+        guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     func toggleWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
-        if window.isVisible {
-            window.orderOut(nil)
-        } else {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        if window.isVisible { window.orderOut(nil) } else { showWindow() }
     }
 }
 
@@ -29,13 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Text("MAX ↔ Telegram").foregroundStyle(.secondary)
                     Text("1. Создайте бота в Telegram через @BotFather, добавьте его в группу и отправьте там /family.")
                     if model.hasTelegram {
-                        Text("Токен сохранён в Связке ключей: ••••••••").foregroundStyle(.secondary)
+                        Text("Токен сохранён локально: ••••••••").foregroundStyle(.secondary)
                     } else {
                         SecureField("Токен Telegram-бота", text: $model.token).disabled(model.running || model.busy)
                     }
                     HStack {
                         Button("Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.running || model.busy)
-                        Button("Из Связки ключей") { model.restoreToken() }.disabled(model.running || model.busy)
+                        Button("Восстановить токен") { model.restoreToken() }.disabled(model.running || model.busy)
                         Button("Удалить токен") { model.deleteToken() }.disabled(model.running || model.busy)
                     }
                     Text("Перед поиском добавьте бота в группу Telegram и отправьте там /family.").font(.callout)
@@ -77,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Button("Стоп") { model.stop() }.disabled(!model.running)
                     }
                     Spacer()
-                    Text("Только новые сообщения: текст, фото и видео, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в Связке ключей. Тексты сообщений не пишутся в логи.")
+                    Text("Только новые сообщения: текст, фото и видео, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в локальном хранилище приложения. Тексты сообщений не пишутся в логи.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.padding(20).frame(minWidth: 470, idealWidth: 520, maxWidth: 620)
                 MaxPanel(web: model.max).frame(minWidth: 680, minHeight: 760)

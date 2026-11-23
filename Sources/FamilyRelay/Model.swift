@@ -192,7 +192,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         let saved = Secrets.read()
         token = saved
         if saved.isEmpty {
-            status = "Токен в Связке ключей не найден. Вставьте токен и нажмите «Подключить бота»."
+            status = "Токен не найден в локальном хранилище. Вставьте токен и нажмите «Подключить бота»."
         }
     }
     func deleteToken() {
@@ -200,14 +200,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         Secrets.delete()
         telegram = nil
         token = ""
-        status = "Токен удалён из Связки ключей. Вставьте новый токен и нажмите «Подключить бота»."
+        status = "Токен удалён из локального хранилища. Вставьте новый токен и нажмите «Подключить бота»."
     }
     func restoreAndConnect() async {
         let saved = Secrets.read()
         guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
         token = saved
         await connectTelegram()
-        if telegram != nil { status = "Бот подключён автоматически из Связки ключей. \(status)"; await refreshSavedGroupTitles() }
+        if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles() }
     }
     func discover() async {
         guard !running, !busy, let api = telegram else { return }
@@ -458,7 +458,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     func copyDiagnostics() {
         let text = """
         Статус: \(status)
-        Бот: \(telegram == nil ? "не подключён" : "подключён"), токен в Связке: \(Secrets.read().isEmpty ? "нет" : "есть")
+        Бот: \(telegram == nil ? "не подключён" : "подключён"), токен сохранён: \(Secrets.read().isEmpty ? "нет" : "есть")
         MAX: \(maxReady ? "подключён" : "нет"), событий: \(maxEvents), ready: \(readyCount), групп: \(maxGroups.count)
         Выбрано: MAX \(maxGroups.first(where: { $0.id == maxID })?.title ?? "—"), TG \(tgGroups.first(where: { $0.id == tgID })?.title ?? "—")
         JS: старт \(jsStart), сокет \(jsSocket), авторизация \(jsAuth)
