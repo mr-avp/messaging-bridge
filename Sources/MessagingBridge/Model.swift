@@ -14,6 +14,7 @@ enum RelayMediaKind: String { case photo, video, file }
 struct RelayMedia { let kind: RelayMediaKind; let url: String; let name: String? }
 struct RelayMessage { let id: String; let chat: String; let sender: String; let text: String; let media: [RelayMedia] }
 @MainActor final class Model: ObservableObject {
+    static let shared = Model()
     @Published var token = ""
     @Published var maxGroups: [Group] = []
     @Published var tgGroups: [Group] = []

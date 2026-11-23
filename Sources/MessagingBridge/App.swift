@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @main struct MessagingBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = Model()
+    @ObservedObject private var model = Model.shared
     var body: some Scene {
         WindowGroup("Мост сообщений (Messaging Bridge)") {
             HSplitView {
