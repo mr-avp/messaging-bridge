@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-@main struct FamilyRelayApp: App {
+@main struct MessagingBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = Model()
     var body: some Scene {

@@ -1,5 +1,5 @@
 import XCTest
-@testable import FamilyRelay
+@testable import MessagingBridge
 final class PolicyTests: XCTestCase {
     func testPrivateChatNeverPasses() {
         XCTAssertFalse(RelayPolicy.accept(chat: "private", allowed: "family", text: "Код 123456"))

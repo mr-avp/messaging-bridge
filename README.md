@@ -6,7 +6,7 @@
 
 ## Запуск
 
-Откройте `dist/FamilyRelay.app`. Для повторной сборки: `scripts/build.sh`.
+Откройте `dist/MessagingBridge.app`. Для повторной сборки: `scripts/build.sh`.
 
 1. Создайте отдельного Telegram-бота через официальный @BotFather:
    - отправьте `/newbot`;

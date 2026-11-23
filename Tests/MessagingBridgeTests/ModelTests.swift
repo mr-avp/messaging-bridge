@@ -1,5 +1,5 @@
 import XCTest
-@testable import FamilyRelay
+@testable import MessagingBridge
 
 @MainActor
 final class ModelTests: XCTestCase {

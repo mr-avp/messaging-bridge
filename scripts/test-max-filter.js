@@ -1,7 +1,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync(__dirname + '/../Sources/FamilyRelay/MaxWeb.swift', 'utf8').split('static let script = #"""')[1].split('"""#')[0];
+const source = fs.readFileSync(__dirname + '/../Sources/MessagingBridge/MaxWeb.swift', 'utf8').split('static let script = #"""')[1].split('"""#')[0];
 const received = [];
 const relayReceived = () => received.filter(x => x.kind !== 'debug');
 class WS {

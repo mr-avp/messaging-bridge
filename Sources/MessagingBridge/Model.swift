@@ -108,7 +108,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             default:
                 lastDebug = "\(stage): \(data)"
             }
-            print("FamilyRelay MAX debug: \(lastDebug)")
+            print("MessagingBridge MAX debug: \(lastDebug)")
         case "disconnected":
             maxReady = false
             stop("MAX отключился. После восстановления соединения включите мост снова.")
@@ -116,7 +116,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             let stage = data["stage"] as? String ?? "?"
             let info = data["error"] as? String ?? (data["url"] as? String ?? "")
             status = "MAX навигация: \(stage) \(info)"
-            print("FamilyRelay MAX nav: \(stage) \(info)")
+            print("MessagingBridge MAX nav: \(stage) \(info)")
         case "message":
             guard running, let chat = data["chat"] as? String, let id = data["id"] as? String else { return }
             let text = (data["text"] as? String) ?? ""
@@ -332,12 +332,18 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     private func persistConnections() {
         if let data = try? JSONEncoder().encode(connections) {
-            UserDefaults.standard.set(data, forKey: "family-relay.connections")
+            UserDefaults.standard.set(data, forKey: "messaging-bridge.connections")
         }
     }
     private func loadConnections() {
-        guard let data = UserDefaults.standard.data(forKey: "family-relay.connections"),
-              let decoded = try? JSONDecoder().decode([BridgeConnection].self, from: data) else { return }
+        let defaults = UserDefaults.standard
+        let data = defaults.data(forKey: "messaging-bridge.connections")
+            ?? defaults.data(forKey: "family-relay.connections")
+        guard let data, let decoded = try? JSONDecoder().decode([BridgeConnection].self, from: data) else { return }
+        if defaults.data(forKey: "messaging-bridge.connections") == nil {
+            defaults.set(data, forKey: "messaging-bridge.connections")
+            defaults.removeObject(forKey: "family-relay.connections")
+        }
         connections = decoded
         if maxGroups.isEmpty {
             maxGroups = decoded.map { Group(id: $0.maxID, title: $0.maxTitle ?? $0.maxID) }
