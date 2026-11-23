@@ -199,6 +199,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     func discover() async {
         guard !running, !busy, let api = telegram else { return }
+        status = "Ищу группу. Сначала добавьте бота в группу Telegram и отправьте там /family."
         busy = true; defer { busy = false }
         do {
             let updates = try await api.updates(offset: offset, timeout: 0)

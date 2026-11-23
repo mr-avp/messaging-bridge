@@ -26,7 +26,7 @@ import SwiftUI
                         Button("Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.running || model.busy)
                         Button("Из Связки ключей") { model.restoreToken() }.disabled(model.running || model.busy)
                     }
-                    Text("Отправьте /family в группу Telegram.").font(.callout)
+                    Text("Перед поиском добавьте бота в группу Telegram и отправьте там /family.").font(.callout)
                     Button("Найти группу") { Task { await model.discover() } }.disabled(model.running || model.busy)
                     Picker("Группа Telegram", selection: $model.tgID) {
                         Text("Выберите группу").tag("")
