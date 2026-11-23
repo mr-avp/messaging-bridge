@@ -288,7 +288,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             queue.removeAll(); seen.removeAll(); runID = UUID()
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
-            running = true; status = "Мост работает. Переносятся новые тексты, фото и видео."
+            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото и видео."
             poll = Task { [weak self] in
                 guard let self else { return }
                 do {
