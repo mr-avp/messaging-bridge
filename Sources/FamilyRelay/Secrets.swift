@@ -13,6 +13,10 @@ struct Secrets {
             guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw RelayError.storage }
         } else if status != errSecSuccess { throw RelayError.storage }
     }
+    static func delete() {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "telegram"]
+        SecItemDelete(query as CFDictionary)
+    }
     static func read() -> String {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "telegram", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?

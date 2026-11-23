@@ -191,6 +191,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             status = "Токен в Связке ключей не найден. Вставьте токен и нажмите «Подключить бота»."
         }
     }
+    func deleteToken() {
+        guard !running, !busy else { return }
+        Secrets.delete()
+        telegram = nil
+        token = ""
+        status = "Токен удалён из Связки ключей. Вставьте новый токен и нажмите «Подключить бота»."
+    }
     func restoreAndConnect() async {
         let saved = Secrets.read()
         guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
