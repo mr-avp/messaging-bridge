@@ -103,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Divider()
             Button("Выйти") { NSApp.terminate(nil) }
         } label: {
-            Image("TrayIcon").renderingMode(.original)
+            Image("TrayIcon")
         }
     }
 }
