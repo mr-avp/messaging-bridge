@@ -414,7 +414,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         Статус: \(status)
         Бот: \(telegram == nil ? "не подключён" : "подключён"), токен в Связке: \(Secrets.read().isEmpty ? "нет" : "есть")
         MAX: \(maxReady ? "подключён" : "нет"), событий: \(maxEvents), ready: \(readyCount), групп: \(maxGroups.count)
-        Выбрано: MAX \(maxGroups.first(where: { $0.id == maxID })?.title ?? "—") (\(maxID.isEmpty ? "—" : maxID)), TG \(tgGroups.first(where: { $0.id == tgID })?.title ?? "—") (\(tgID.isEmpty ? "—" : tgID))
+        Выбрано: MAX \(maxGroups.first(where: { $0.id == maxID })?.title ?? "—"), TG \(tgGroups.first(where: { $0.id == tgID })?.title ?? "—")
         JS: старт \(jsStart), сокет \(jsSocket), авторизация \(jsAuth)
         Хост сокета: \(jsHost.isEmpty ? "—" : jsHost)
         Страница: \(jsTitle.isEmpty ? "—" : jsTitle), текст \(jsTextLen), видимость \(jsVisibility.isEmpty ? "—" : jsVisibility)
