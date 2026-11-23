@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         SecureField("Токен Telegram-бота", text: $model.token).disabled(model.running || model.busy)
                     }
                     HStack {
-                        Button("Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.running || model.busy)
+                        Button(model.hasTelegram ? "Бот подключён" : "Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.hasTelegram || model.running || model.busy)
                         Button("Восстановить токен") { model.restoreToken() }.disabled(model.running || model.busy)
                         Button("Удалить токен") { model.deleteToken() }.disabled(model.running || model.busy)
                     }
@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text("Перенесено: \(model.count)").monospacedDigit()
                     HStack {
-                        Button("Включить для выбранных групп") { Task { await model.start() } }.disabled(!model.canStart || model.running)
+                        Button("Включить для выбранной группы") { Task { await model.start() } }.disabled(!model.canStart || model.running)
                         Button("Стоп") { model.stop() }.disabled(!model.running)
                     }
                     Spacer()
