@@ -1,6 +1,6 @@
 # Мост сообщений (Messaging Bridge) — локальный прототип на Swift
 
-Слоган: Connecting people.
+Connecting people.
 
 Мост между группой MAX и группой Telegram. macOS 14+, без сторонних зависимостей.
 
