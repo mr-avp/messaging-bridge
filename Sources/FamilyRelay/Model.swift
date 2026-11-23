@@ -291,6 +291,11 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard let data = UserDefaults.standard.data(forKey: "family-relay.connections"),
               let decoded = try? JSONDecoder().decode([BridgeConnection].self, from: data) else { return }
         connections = decoded
+        if connectionID == nil, let first = decoded.first {
+            connectionID = first.id
+            maxID = first.maxID
+            tgID = first.tgID
+        }
     }
     func start() async {
         guard canStart, !running, let api = telegram else { return }

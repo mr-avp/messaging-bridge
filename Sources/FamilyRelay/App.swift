@@ -9,18 +9,7 @@ import SwiftUI
                     Text("Мост сообщений").font(.largeTitle.bold())
                     Text("Messaging Bridge · Connecting people").foregroundStyle(.secondary)
                     Text("MAX ↔ Telegram").foregroundStyle(.secondary)
-                    Text("1. Войдите в MAX справа. Выберите группу-источник и оставьте её открытой.")
-                    HStack {
-                        Button("Открыть / перезагрузить MAX") { model.openMAX() }.disabled(model.running || model.busy)
-                        Button("Обновить группы") { Task { await model.refreshGroups() } }.disabled(!model.maxReady || model.running || model.busy)
-                        Button("Копировать диагностику") { model.copyDiagnostics() }
-                    }
-                    Picker("Группа MAX", selection: $model.maxID) {
-                        Text("Выберите группу").tag("")
-                        ForEach(model.maxGroups) { Text($0.title).tag($0.id) }
-                    }.disabled(model.running || model.busy)
-                    Divider()
-                    Text("2. Создайте отдельного бота через @BotFather. Отключите Group Privacy и добавьте бота в группу Telegram.")
+                    Text("1. Создайте бота в Telegram через @BotFather, добавьте его в группу и отправьте там /family.")
                     SecureField("Токен Telegram-бота", text: $model.token).disabled(model.running || model.busy)
                     HStack {
                         Button("Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.running || model.busy)
@@ -32,6 +21,17 @@ import SwiftUI
                     Picker("Группа Telegram", selection: $model.tgID) {
                         Text("Выберите группу").tag("")
                         ForEach(model.tgGroups) { Text($0.title).tag($0.id) }
+                    }.disabled(model.running || model.busy)
+                    Divider()
+                    Text("2. Войдите в MAX справа. Выберите группу-источник и оставьте её открытой.")
+                    HStack {
+                        Button("Открыть / перезагрузить MAX") { model.openMAX() }.disabled(model.running || model.busy)
+                        Button("Обновить группы") { Task { await model.refreshGroups() } }.disabled(!model.maxReady || model.running || model.busy)
+                        Button("Копировать диагностику") { model.copyDiagnostics() }
+                    }
+                    Picker("Группа MAX", selection: $model.maxID) {
+                        Text("Выберите группу").tag("")
+                        ForEach(model.maxGroups) { Text($0.title).tag($0.id) }
                     }.disabled(model.running || model.busy)
                     Divider()
                     Text("Подключения").font(.headline)
