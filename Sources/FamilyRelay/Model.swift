@@ -7,6 +7,8 @@ struct BridgeConnection: Identifiable, Codable, Hashable {
     var maxID: String
     var tgID: String
     var title: String
+    var maxTitle: String?
+    var tgTitle: String?
 }
 enum RelayMediaKind: String { case photo, video, file }
 struct RelayMedia { let kind: RelayMediaKind; let url: String; let name: String? }
@@ -248,6 +250,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard status == 200 else { throw RelayError.api }
         return data
     }
+    var hasTelegram: Bool { telegram != nil }
     var canSaveConnection: Bool { maxGroups.contains(where: { $0.id == maxID }) && tgGroups.contains(where: { $0.id == tgID }) }
     var canStart: Bool { telegram != nil && maxReady && maxGroups.contains(where: {$0.id == maxID}) && tgGroups.contains(where: {$0.id == tgID}) && !busy }
     func saveConnection() {
@@ -258,7 +261,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             connectionID = existing.id
             return
         }
-        let connection = BridgeConnection(maxID: maxID, tgID: tgID, title: "\(maxTitle) ↔ \(tgTitle)")
+        let connection = BridgeConnection(maxID: maxID, tgID: tgID, title: "\(maxTitle) ↔ \(tgTitle)", maxTitle: maxTitle, tgTitle: tgTitle)
         connections.append(connection)
         connectionID = connection.id
         persistConnections()
@@ -291,6 +294,12 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard let data = UserDefaults.standard.data(forKey: "family-relay.connections"),
               let decoded = try? JSONDecoder().decode([BridgeConnection].self, from: data) else { return }
         connections = decoded
+        if maxGroups.isEmpty {
+            maxGroups = decoded.map { Group(id: $0.maxID, title: $0.maxTitle ?? $0.maxID) }
+        }
+        if tgGroups.isEmpty {
+            tgGroups = decoded.map { Group(id: $0.tgID, title: $0.tgTitle ?? $0.tgID) }
+        }
         if connectionID == nil, let first = decoded.first {
             connectionID = first.id
             maxID = first.maxID

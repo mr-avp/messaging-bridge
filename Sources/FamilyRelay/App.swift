@@ -10,7 +10,11 @@ import SwiftUI
                     Text("Messaging Bridge · Connecting people").foregroundStyle(.secondary)
                     Text("MAX ↔ Telegram").foregroundStyle(.secondary)
                     Text("1. Создайте бота в Telegram через @BotFather, добавьте его в группу и отправьте там /family.")
-                    SecureField("Токен Telegram-бота", text: $model.token).disabled(model.running || model.busy)
+                    if model.hasTelegram {
+                        Text("Токен сохранён в Связке ключей: ••••••••").foregroundStyle(.secondary)
+                    } else {
+                        SecureField("Токен Telegram-бота", text: $model.token).disabled(model.running || model.busy)
+                    }
                     HStack {
                         Button("Подключить бота") { Task { await model.connectTelegram() } }.disabled(model.running || model.busy)
                         Button("Из Связки ключей") { model.restoreToken() }.disabled(model.running || model.busy)
