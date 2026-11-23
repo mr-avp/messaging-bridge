@@ -11,6 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func showWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
+        if let screen = NSScreen.main {
+            let frame = window.frame
+            let screenFrame = screen.visibleFrame
+            if frame.origin.x > screenFrame.maxX - 50 || frame.origin.y > screenFrame.maxY - 50
+                || frame.origin.x < screenFrame.minX - frame.width || frame.origin.y < screenFrame.minY - frame.height {
+                window.setFrameOrigin(NSPoint(x: screenFrame.minX + 120, y: screenFrame.maxY - frame.height - 100))
+            }
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
