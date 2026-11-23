@@ -8,7 +8,7 @@ struct BridgeConnection: Identifiable, Codable, Hashable {
     var tgID: String
     var title: String
 }
-enum RelayMediaKind: String { case photo, video }
+enum RelayMediaKind: String { case photo, video, file }
 struct RelayMedia { let kind: RelayMediaKind; let url: String }
 struct RelayMessage { let id: String; let chat: String; let sender: String; let text: String; let media: [RelayMedia] }
 @MainActor final class Model: ObservableObject {
@@ -307,10 +307,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             guard content != "/family", !content.hasPrefix("/family@") else { continue }
                             let photoID = (m["photo"] as? [[String: Any]])?.last?["file_id"] as? String
                             let videoID = (m["video"] as? [String: Any])?["file_id"] as? String
+                            let document = m["document"] as? [String: Any]
+                            let documentID = document?["file_id"] as? String
+                            let documentName = document?["file_name"] as? String
                             let sender = m["from"] as? [String: Any] ?? [:]
                             guard RelayPolicy.accept(chat: id.stringValue, allowed: self.tgID, text: content,
                                                      bot: sender["is_bot"] as? Bool ?? false,
-                                                     hasMedia: photoID != nil || videoID != nil) else { continue }
+                                                     hasMedia: photoID != nil || videoID != nil || documentID != nil) else { continue }
                             let rendered = RelayPolicy.render(author: Self.telegramName(sender), text: content)
                             guard rendered.utf16.count <= 4000 else { self.stop("Слишком длинное сообщение. Мост остановлен; передайте его вручную."); return }
                             if let fileID = photoID {
@@ -319,6 +322,9 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             } else if let fileID = videoID {
                                 let data = try await api.downloadFile(fileID: fileID)
                                 try await self.max.sendMedia(chat: self.maxID, kind: .video, data: data, text: rendered, fileName: "video.mp4")
+                            } else if let fileID = documentID {
+                                let data = try await api.downloadFile(fileID: fileID)
+                                try await self.max.sendMedia(chat: self.maxID, kind: .file, data: data, text: rendered, fileName: documentName ?? "document")
                             } else {
                                 try await self.max.send(chat: self.maxID, text: rendered)
                             }
@@ -343,7 +349,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                 for (index, media) in message.media.enumerated() {
                                     let label = index == 0 ? caption : ""
                                     do {
-                                        try await api.sendMedia(chat: self.tgID, kind: media.kind == .photo ? .photo : .video, url: media.url, caption: label)
+                                        let tgKind: TelegramMediaKind = (media.kind == .photo) ? .photo : (media.kind == .video ? .video : .document)
+                                        try await api.sendMedia(chat: self.tgID, kind: tgKind, url: media.url, caption: label)
                                     } catch {
                                         let fallback = label.isEmpty ? media.url : "\(caption)\n\(media.url)"
                                         try await api.send(chat: self.tgID, text: String(fallback.prefix(4000)))

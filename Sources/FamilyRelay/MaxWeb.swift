@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-enum MaxMediaKind: String { case photo, video }
+enum MaxMediaKind: String { case photo, video, file }
 
 @MainActor final class MaxWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     static let endpoint = URL(string: "https://web.max.ru")!
@@ -430,6 +430,10 @@ enum MaxMediaKind: String { case photo, video }
             ? {kind: 'video', videoId: videoId.toString(), token: token}
             : null;
         }
+        if (type === 'FILE') {
+          const url = urlOf(attach.url || attach.baseUrl || attach.previewUrl);
+          return url ? {kind: 'file', url: url} : null;
+        }
         return null;
       };
       const resolveMedia = async (items, chat, messageId) => {
@@ -557,6 +561,19 @@ enum MaxMediaKind: String { case photo, video }
           const uploaded = await uploadResult(await fetch(info.url, {method: 'POST', headers: headers, body: bytes}));
           attach = {_type: 'VIDEO', videoId: videoId, token: String(info.token)};
           if (uploaded && uploaded.thumbhash) attach.thumbhash = bytesFromBase64(uploaded.thumbhash);
+        } else if (kind === 'file') {
+          const ack = await request(87, {count: 1, length: bytes.length}, 'upload-url');
+          const info = ack && Array.isArray(ack.info) ? ack.info[0] : null;
+          const fileId = info ? bigintOrNull(info.fileId) : null;
+          if (!info || !info.url || fileId === null) throw new Error('upload info');
+          const headers = {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': 'attachment; filename=' + encodeURIComponent(fileName || 'file'),
+            'Content-Range': 'bytes 0-' + (bytes.length - 1) + '/' + bytes.length
+          };
+          await uploadResult(await fetch(info.url, {method: 'POST', headers: headers, body: bytes}));
+          attach = {_type: 'FILE', fileId: fileId, name: fileName || 'file'};
+          if (info.token) attach.token = String(info.token);
         } else {
           throw new Error('media kind');
         }

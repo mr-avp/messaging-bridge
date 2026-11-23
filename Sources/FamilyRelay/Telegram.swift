@@ -11,6 +11,7 @@ struct TelegramError: Error, CustomStringConvertible {
 enum TelegramMediaKind: String {
     case photo
     case video
+    case document
 }
 
 final class Telegram {
@@ -67,8 +68,13 @@ final class Telegram {
     }
 
     func sendMedia(chat: String, kind: TelegramMediaKind, url: String, caption: String = "") async throws {
-        let method = kind == .photo ? "sendPhoto" : "sendVideo"
-        let key = kind == .photo ? "photo" : "video"
+        let method: String
+        let key: String
+        switch kind {
+        case .photo: method = "sendPhoto"; key = "photo"
+        case .video: method = "sendVideo"; key = "video"
+        case .document: method = "sendDocument"; key = "document"
+        }
         var payload: [String: Any] = ["chat_id": chat, key: url]
         if !caption.isEmpty { payload["caption"] = String(caption.prefix(1024)); payload["parse_mode"] = "HTML" }
         if kind == .video { payload["supports_streaming"] = true }
