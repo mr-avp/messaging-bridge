@@ -17,6 +17,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Мост сообщений</string>
 <key>CFBundleExecutable</key><string>FamilyRelay</string>
 <key>CFBundleIconFile</key><string>MessagingBridge</string>
+<key>LSUIElement</key><true/>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>0.1</string>

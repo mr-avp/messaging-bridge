@@ -2,14 +2,15 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func toggleWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
         if window.isVisible {
             window.orderOut(nil)
-            NSApp.setActivationPolicy(.accessory)
         } else {
-            NSApp.setActivationPolicy(.regular)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
