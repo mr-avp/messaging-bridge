@@ -8,6 +8,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/MessagingBridge" "$app/Contents/MacOS/MessagingBridge"
 cp -R "$bin_dir/MessagingBridge_MessagingBridge.bundle" "$app/Contents/Resources/"
 cp "$PWD/Resources/MessagingBridge.icns" "$app/Contents/Resources/MessagingBridge.icns"
+cp "$PWD/Resources/TrayIcon.png" "$app/Contents/Resources/TrayIcon.png"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

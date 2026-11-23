@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+private let trayIcon: NSImage = {
+    let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "png")
+    let image = url.flatMap { NSImage(contentsOf: $0) } ?? NSImage(size: NSSize(width: 22, height: 22))
+    image.isTemplate = true
+    return image
+}()
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showWindow() }
@@ -103,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Divider()
             Button("Выйти") { NSApp.terminate(nil) }
         } label: {
-            Image("TrayIcon")
+            Image(nsImage: trayIcon)
         }
     }
 }
