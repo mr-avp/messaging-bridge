@@ -39,6 +39,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var jsTextLen = 0
     @Published var jsVisibility = ""
     @Published var count = 0
+    @Published var autoStart = false
+    @Published var autoRelay = false
     let max = MaxWeb()
     private var telegram: Telegram?
     private let downloadSession = URLSession(configuration: .ephemeral)
@@ -48,11 +50,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private var seen = Set<String>()
     private var runID = UUID()
     private var offset = 0
+    private var didAutoStart = false
     init() {
         max.onMessage = { [weak self] data in
             self?.receive(data)
         }
         loadConnections()
+        loadSettings()
     }
     func openMAX() { max.load() }
     func receive(_ data: [String: Any]) {
@@ -67,6 +71,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             status = raw.isEmpty
                 ? "MAX подключён, но список групп пуст. Откройте нужный чат в MAX справа и нажмите «Обновить группы»."
                 : "MAX подключён. Выберите группу-источник и оставьте её открытой справа."
+            autoStartIfNeeded()
         case "groups":
             maxEvents += 1
             apply(groups: data["groups"] as? [[String: Any]] ?? [])
@@ -208,7 +213,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
         token = saved
         await connectTelegram()
-        if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles() }
+        if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles(); autoStartIfNeeded() }
     }
     func discover() async {
         guard !running, !busy, let api = telegram else { return }
@@ -253,6 +258,53 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard status == 200 else { throw RelayError.api }
         return data
+    }
+    private func loadSettings() {
+        let defaults = UserDefaults.standard
+        autoStart = defaults.bool(forKey: "messaging-bridge.auto-start")
+        autoRelay = defaults.bool(forKey: "messaging-bridge.auto-relay")
+    }
+    private func saveSettings() {
+        let defaults = UserDefaults.standard
+        defaults.set(autoStart, forKey: "messaging-bridge.auto-start")
+        defaults.set(autoRelay, forKey: "messaging-bridge.auto-relay")
+    }
+    func setAutoStart(_ enabled: Bool) {
+        autoStart = enabled
+        saveSettings()
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/local.messaging-bridge.plist")
+        do {
+            if enabled {
+                let executable = Bundle.main.executablePath ?? ""
+                let plist: [String: Any] = [
+                    "Label": "local.messaging-bridge",
+                    "ProgramArguments": [executable],
+                    "RunAtLoad": true,
+                    "KeepAlive": false
+                ]
+                try (plist as NSDictionary).write(to: url)
+            } else {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+        } catch {
+            status = "Не удалось изменить автозапуск: \(error.localizedDescription)"
+        }
+    }
+    func setAutoRelay(_ enabled: Bool) {
+        autoRelay = enabled
+        saveSettings()
+        if enabled { autoStartIfNeeded() }
+    }
+    func applyStartupSettings() {
+        autoStartIfNeeded()
+    }
+    func autoStartIfNeeded() {
+        guard autoRelay, !didAutoStart, !running, !busy, canStart else { return }
+        didAutoStart = true
+        Task { await start() }
     }
     var hasTelegram: Bool { telegram != nil }
     func refreshSavedGroupTitles() async {

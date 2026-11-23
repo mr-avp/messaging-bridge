@@ -91,6 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Text("Один бот может работать в нескольких Telegram-группах. Мост переносит выбранную пару групп; для другой пары остановите мост и выберите сохранённое подключение.")
                         .font(.caption).foregroundStyle(.secondary)
                     Divider()
+                    Toggle("Автозапуск при входе в систему", isOn: Binding(get: { model.autoStart }, set: { model.setAutoStart($0) }))
+                    Toggle("Автовключение моста при запуске", isOn: Binding(get: { model.autoRelay }, set: { model.setAutoRelay($0) }))
+                    Divider()
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text("Перенесено: \(model.count)").monospacedDigit()
                     HStack {
@@ -103,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }.padding(20).frame(minWidth: 380)
                 MaxPanel(web: model.max).frame(minWidth: 420, minHeight: 500)
             }.frame(minWidth: 900, minHeight: 600)
-            .task { await model.restoreAndConnect() }
+            .task { await model.restoreAndConnect(); model.applyStartupSettings() }
         }
         MenuBarExtra {
             Button("Показать / скрыть окно") { appDelegate.toggleWindow() }
