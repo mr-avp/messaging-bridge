@@ -180,6 +180,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             telegram = api
             token = ""
             status = "Бот подключён. Добавьте его в группу Telegram и отправьте там /family, затем нажмите «Найти группу»."
+        Task { await refreshSavedGroupTitles() }
         } catch let error as TelegramError {
             status = "Не удалось подключить бота: \(error.description). Токен и ответ API в лог не пишутся."
         } catch {
@@ -205,7 +206,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
         token = saved
         await connectTelegram()
-        if telegram != nil { status = "Бот подключён автоматически из Связки ключей. \(status)" }
+        if telegram != nil { status = "Бот подключён автоматически из Связки ключей. \(status)"; await refreshSavedGroupTitles() }
     }
     func discover() async {
         guard !running, !busy, let api = telegram else { return }
@@ -251,6 +252,27 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         return data
     }
     var hasTelegram: Bool { telegram != nil }
+    func refreshSavedGroupTitles() async {
+        guard let api = telegram else { return }
+        var changed = false
+        for index in connections.indices {
+            let id = connections[index].tgID
+            if connections[index].tgTitle != nil { continue }
+            if let chat = try? await api.call("getChat", ["chat_id": id]) as? [String: Any],
+               let title = chat["title"] as? String, !title.isEmpty {
+                connections[index].tgTitle = title
+                let maxTitle = connections[index].maxTitle ?? connections[index].maxID
+                connections[index].title = "\(maxTitle) ↔ \(title)"
+                changed = true
+            }
+        }
+        if changed {
+            persistConnections()
+            if tgGroups.isEmpty || tgGroups.allSatisfy({ $0.id == $0.title }) {
+                tgGroups = connections.map { Group(id: $0.tgID, title: $0.tgTitle ?? $0.tgID) }
+            }
+        }
+    }
     var canSaveConnection: Bool { maxGroups.contains(where: { $0.id == maxID }) && tgGroups.contains(where: { $0.id == tgID }) }
     var canStart: Bool { telegram != nil && maxReady && maxGroups.contains(where: {$0.id == maxID}) && tgGroups.contains(where: {$0.id == tgID}) && !busy }
     func saveConnection() {
