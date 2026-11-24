@@ -432,7 +432,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             queue.removeAll(); seen.removeAll(); runID = UUID()
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
-            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото и видео."
+            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото, видео, GIF и документы."
             poll = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -515,7 +515,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             let parts = RelayPolicy.telegramParts(
                                 author: message.sender,
                                 text: message.text,
-                                limit: TelegramLimits.messageUnits
+                                limit: message.media.isEmpty ? TelegramLimits.messageUnits : TelegramLimits.captionUnits
                             )
                             if message.media.isEmpty {
                                 for part in parts {
