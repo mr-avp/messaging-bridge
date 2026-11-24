@@ -3,7 +3,7 @@ import WebKit
 
 enum MaxMediaKind: String { case photo, video, file }
 
-@MainActor final class MaxWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+@MainActor class MaxWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     static let endpoint = URL(string: "https://web.max.ru")!
     var onMessage: (([String: Any]) -> Void)?
     lazy var view: WKWebView = {

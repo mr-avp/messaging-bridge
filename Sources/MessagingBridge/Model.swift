@@ -39,15 +39,22 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var jsTextLen = 0
     @Published var jsVisibility = ""
     @Published var count = 0
+    @Published var sessionRelayCount = 0
+    @Published var lastSuccessfulRelayAt: Date? = nil
     @Published var autoStart = false
     @Published var autoRelay = false
     @Published var autoRecover = false
     @Published var recovering = false
+    @Published var selectedSection: AppSection = .bridge
+    @Published var maxPanelVisible: Bool = true
+    @Published var settingsPane: SettingsPane = .connections
+    @Published var informationPane: InformationPane = .about
+    let eventLog: EventLog
     var autoRecovery: Bool { get { autoRecover } set { setAutoRecover(newValue) } }
     var isRecovering: Bool { recovering }
     var recoveryBackoff: RecoveryBackoff { RecoveryBackoff() }
     @Published var recoveryAttempt = 0
-    let max = MaxWeb()
+    let max: MaxWeb
     var telegram: Telegram?
     private let downloadSession = URLSession(configuration: .ephemeral)
     private var poll: Task<Void, Never>?
@@ -60,13 +67,19 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private var didAutoStart = false
     private var userStopped = false
     private var recoveryBlocked = false
+    private var terminating = false
     private var recoveryTask: Task<Void, Never>?
+    /// The async "disable MAX relay" issued by stop(). start() awaits it before
+    /// re-enabling so a late disable cannot land after our enable.
+    private var disableTask: Task<Void, Never>?
     private var recoveryGeneration: Int = 0
     private var wakeObserver: NSObjectProtocol?
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, eventLog: EventLog? = nil, max: MaxWeb? = nil) {
         self.defaults = defaults
-        max.onMessage = { [weak self] data in
+        self.eventLog = eventLog ?? EventLog()
+        self.max = max ?? MaxWeb()
+        self.max.onMessage = { [weak self] data in
             self?.receive(data)
         }
         loadConnections()
@@ -96,15 +109,29 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     func receive(_ data: [String: Any]) {
         switch data["kind"] as? String {
         case "ready":
+            let wasReady = maxReady
             maxReady = true
             readyCount += 1
             maxEvents += 1
             readySocketGen = jsSocket
+            if !wasReady { eventLog.record(.maxConnect) }
             let raw = data["groups"] as? [[String: Any]] ?? []
             apply(groups: raw)
             status = raw.isEmpty
                 ? "MAX подключён, но список групп пуст. Откройте нужный чат в MAX справа и нажмите «Обновить группы»."
                 : "MAX подключён. Выберите группу-источник и оставьте её открытой справа."
+            if running {
+                // Every `ready` marks a freshly authenticated MAX JS world (new
+                // socket or reloaded page), where the relay's `enabled`/`chat`
+                // state can have been reset. Re-arm on each one, not only on a
+                // false→true transition: if the `disconnected` event was missed
+                // (page navigated away), maxReady stayed true and a stale-ready
+                // would leave sends rejected as "offline" while the UI is green.
+                Task { [weak self] in
+                    guard let self else { return }
+                    try? await self.max.configure(chat: self.maxID, enabled: true)
+                }
+            }
             autoStartIfNeeded()
             if !running && autoRecover && !userStopped && !recoveryBlocked { scheduleRecovery(reason: "MAX готов") }
         case "groups":
@@ -116,9 +143,12 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                     : "MAX подключён. Групп: \(maxGroups.count). Выберите группу-источник и оставьте чат открытым."
             }
         case "login-error":
+            let wasReady = maxReady
             maxReady = false
             recoveryBlocked = true
             cancelRecovery()
+            if wasReady { eventLog.record(.maxDisconnect) }
+            eventLog.record(.recoveryBlocked, level: .warning)
             status = "MAX не принял вход (\(data["code"] ?? "?" )). Перезагрузите MAX и войдите заново."
         case "debug":
             let stage = data["stage"] as? String ?? "?"
@@ -153,7 +183,9 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             }
             print("MessagingBridge MAX debug: \(lastDebug)")
         case "disconnected":
+            let wasReady = maxReady
             maxReady = false
+            if wasReady { eventLog.record(.maxDisconnect) }
             max.load()
             if autoRecover, !userStopped, !recoveryBlocked {
                 stop("MAX отключился. Восстановление будет выполнено автоматически.", manual: false)
@@ -178,8 +210,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             guard RelayPolicy.accept(chat: chat, allowed: maxID, text: text, hasMedia: !media.isEmpty),
                   seen.insert("max:\(id)").inserted else { return }
             let caption = RelayPolicy.render(author: sender, text: text)
-            guard caption.utf16.count <= 4000 else { recoveryBlocked = true; stop("Слишком длинное сообщение MAX. Мост остановлен.", manual: false); return }
-            guard queue.count < 100, seen.count < 10000 else { recoveryBlocked = true; stop("Очередь заполнена. Мост остановлен.", manual: false); return }
+            guard caption.utf16.count <= 4000 else { recoveryBlocked = true; eventLog.record(.recoveryBlocked, level: .warning); stop("Слишком длинное сообщение MAX. Мост остановлен.", manual: false); return }
+            guard queue.count < 100, seen.count < 10000 else { recoveryBlocked = true; eventLog.record(.recoveryBlocked, level: .warning); stop("Очередь заполнена. Мост остановлен.", manual: false); return }
             queue.append(RelayMessage(id: id, chat: chat, sender: sender, text: text, media: media))
         default: break
         }
@@ -230,6 +262,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             telegram = api
             token = ""
             status = "Бот подключён. Добавьте его в группу Telegram и отправьте там /family, затем нажмите «Найти группу»."
+            eventLog.record(.telegramConnect)
         Task { await refreshSavedGroupTitles() }
         } catch let error as TelegramError {
             status = "Не удалось подключить бота: \(error.description). Токен и ответ API в лог не пишутся."
@@ -246,6 +279,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     func deleteToken() {
         guard !running, !busy else { return }
+        if telegram != nil { eventLog.record(.telegramDisconnect) }
         Secrets.delete()
         telegram = nil
         token = ""
@@ -385,6 +419,23 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     var canSaveConnection: Bool { maxGroups.contains(where: { $0.id == maxID }) && tgGroups.contains(where: { $0.id == tgID }) }
     var canStart: Bool { telegram != nil && maxReady && maxGroups.contains(where: {$0.id == maxID}) && tgGroups.contains(where: {$0.id == tgID}) && !busy }
+    /// Single funnel for Telegram → MAX text send paths (including split parts).
+    /// Keeping it here lets the real model path be exercised with an injected
+    /// MaxWeb mock instead of bypassing `start()` in tests.
+    private func sendTextToMax(_ text: String) async throws {
+        try await max.send(chat: maxID, text: text)
+    }
+    /// Why a click on Start cannot begin relaying yet. Returned instead of
+    /// silently doing nothing so a temporary MAX disconnect explains the wait.
+    var startBlockedReason: String? {
+        if running { return nil }
+        if busy { return "Мост уже запускается. Дождитесь завершения." }
+        if telegram == nil { return "Telegram-бот не подключён. Вставьте токен и нажмите «Подключить бота»." }
+        if !maxReady { return "MAX ещё не подключён. Войдите в MAX справа и дождитесь восстановления, затем нажмите «Запустить»." }
+        if !maxGroups.contains(where: { $0.id == maxID }) { return "Выберите группу-источник MAX." }
+        if !tgGroups.contains(where: { $0.id == tgID }) { return "Выберите группу Telegram." }
+        return nil
+    }
     func saveConnection() {
         guard canSaveConnection else { return }
         let maxTitle = maxGroups.first(where: { $0.id == maxID })?.title ?? maxID
@@ -472,10 +523,19 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         updateConnectionTitles()
     }
     func start(cancelRecovery: Bool = true) async {
+        // A start initiated by the user (or by auto-start) clears the latch that
+        // an earlier manual stop set. Recovery calls start(cancelRecovery:false)
+        // and must keep respecting an explicit user stop.
+        if cancelRecovery {
+            userStopped = false
+            recoveryBlocked = false
+            self.cancelRecovery()
+        }
         guard !userStopped, !recoveryBlocked else { return }
-        guard canStart, !running, let api = telegram else { return }
-        guard !busy else { return }
-        if cancelRecovery { self.cancelRecovery() }
+        guard !running else { return }
+        guard !busy else { status = "Мост уже запускается. Дождитесь завершения."; return }
+        if let reason = startBlockedReason { status = reason; return }
+        guard canStart, let api = telegram else { return }
         let thisStartup = UUID()
         startupID = thisStartup
         busy = true
@@ -483,16 +543,26 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             if startupID == thisStartup { busy = false }
         }
         do {
+            sessionRelayCount = 0
+            lastSuccessfulRelayAt = nil
             // Drop pre-existing updates. The first run never exports old conversations.
             let latest = try await api.updates(offset: -1, timeout: 0)
             guard startupID == thisStartup, !userStopped, !recoveryBlocked else { return }
             if let id = latest.last?["update_id"] as? Int { offset = id + 1 }
+            // A manual stop dispatches an async disable of the MAX relay. Wait
+            // for it before re-enabling, otherwise a slow disable can complete
+            // after this enable and leave the relay off while the bridge is
+            // shown as running (every send then rejects "offline").
+            // Keep the reference: if a stop creates a newer disable task while
+            // we are starting, that task stays tracked for the next start.
+            if let pendingDisable = disableTask { await pendingDisable.value }
             try await max.configure(chat: maxID, enabled: true)
             guard startupID == thisStartup, !userStopped, !recoveryBlocked else { return }
-            queue.removeAll(); seen.removeAll(); runID = UUID()
+            queue.removeAll(); seen.removeAll(); runID = UUID(); sessionRelayCount = 0; lastSuccessfulRelayAt = nil
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
             running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото, видео, GIF и документы."
+            eventLog.record(.bridgeStart)
             poll = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -524,8 +594,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                 if let size = media.byteCount, !TelegramLimits.canDownload(byteCount: size) {
                                     self.status = "Вложение Telegram больше 20 МБ не скачано (ограничение Bot API). Передайте его вручную."
                                     if !content.isEmpty {
-                                        for part in renderedParts { try await self.max.send(chat: self.maxID, text: part) }
-                                        self.count += 1
+                                        for part in renderedParts { try await self.sendTextToMax(part) }
+                                        self.count += 1; self.sessionRelayCount += 1; self.lastSuccessfulRelayAt = Date()
                                     }
                                     continue
                                 }
@@ -540,14 +610,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                         mime: media.mimeType
                                     )
                                     for part in renderedParts.dropFirst() {
-                                        try await self.max.send(chat: self.maxID, text: part)
+                                        try await self.sendTextToMax(part)
                                     }
                                 } catch {
                                     if TelegramLimits.isTooBigDownload(error) {
                                         self.status = "Вложение Telegram больше 20 МБ не скачано (ограничение Bot API). Передайте его вручную."
                                         if !content.isEmpty {
-                                            for part in renderedParts { try await self.max.send(chat: self.maxID, text: part) }
-                                            self.count += 1
+                                            for part in renderedParts { try await self.sendTextToMax(part) }
+                                            self.count += 1; self.sessionRelayCount += 1; self.lastSuccessfulRelayAt = Date()
                                         }
                                         continue
                                     }
@@ -555,10 +625,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                 }
                             } else {
                                 for part in renderedParts {
-                                    try await self.max.send(chat: self.maxID, text: part)
+                                    try await self.sendTextToMax(part)
                                 }
                             }
-                            self.count += 1
+                            self.count += 1; self.sessionRelayCount += 1; self.lastSuccessfulRelayAt = Date()
                             try await Task.sleep(for: .milliseconds(350))
                         }
                     }
@@ -566,10 +636,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                     if self.runID == current {
                         let temporary = Model.isTemporaryError(error)
                         if temporary {
+                            self.eventLog.record(.recoveryError(.temporary), level: .warning, category: .temporary)
                             self.stop("Передача остановлена из-за временной ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
                             self.scheduleRecovery(reason: "временная ошибка связи")
                         } else {
-                            self.recoveryBlocked = true; self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                            self.recoveryBlocked = true
+                            self.eventLog.record(.recoveryBlocked, level: .warning)
+                            self.eventLog.record(.recoveryError(.permanent), level: .error, category: .permanent)
+                            self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
                         }
                     }
                 }
@@ -639,7 +713,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                                     try await api.send(chat: self.tgID, text: part)
                                 }
                             }
-                            self.count += 1
+                            self.count += 1; self.sessionRelayCount += 1; self.lastSuccessfulRelayAt = Date()
                             try await Task.sleep(for: .milliseconds(350))
                         } else { try await Task.sleep(for: .milliseconds(200)) }
                     }
@@ -647,10 +721,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                     if self.runID == current {
                         let temporary = Model.isTemporaryError(error)
                         if temporary {
+                            self.eventLog.record(.recoveryError(.temporary), level: .warning, category: .temporary)
                             self.stop("Передача остановлена из-за временной ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
                             self.scheduleRecovery(reason: "временная ошибка связи")
                         } else {
-                            self.recoveryBlocked = true; self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                            self.recoveryBlocked = true
+                            self.eventLog.record(.recoveryBlocked, level: .warning)
+                            self.eventLog.record(.recoveryError(.permanent), level: .error, category: .permanent)
+                            self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
                         }
                     }
                 }
@@ -661,10 +739,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             busy = false
             let temporary = Model.isTemporaryError(error)
             if temporary {
+                eventLog.record(.recoveryError(.temporary), level: .warning, category: .temporary)
                 stop("Не удалось запустить мост из-за временной ошибки связи. Повтор будет выполнен автоматически.", manual: false)
                 scheduleRecovery(reason: "временная ошибка запуска")
             } else {
-                recoveryBlocked = true; stop("Не удалось запустить мост. Проверьте вход в MAX и связь с Telegram.", manual: false)
+                recoveryBlocked = true
+                eventLog.record(.recoveryBlocked, level: .warning)
+                eventLog.record(.recoveryError(.permanent), level: .error, category: .permanent)
+                stop("Не удалось запустить мост. Проверьте вход в MAX и связь с Telegram.", manual: false)
             }
         }
     }
@@ -674,10 +756,16 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         if manual {
             userStopped = true
             cancelRecovery()
+            if !terminating { eventLog.record(.bridgeStopManual, level: .info) }
+        } else if !terminating {
+            eventLog.record(.bridgeStop, level: .info)
         }
         // Internal stops preserve recovery attempt/backoff and do not cancel an active recovery owner.
         queue.removeAll(); status = reason
-        Task { try? await max.configure(chat: maxID, enabled: false) }
+        disableTask = Task { [weak self] in
+            guard let self else { return }
+            try? await self.max.configure(chat: self.maxID, enabled: false)
+        }
     }
     func stopByUser(_ reason: String = "Мост выключен.") {
         stop(reason, manual: true)
@@ -729,6 +817,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                 await MainActor.run {
                     self.recovering = true
                     self.recoveryAttempt = attempt
+                    self.eventLog.record(.recoveryAttempt, level: .info)
                 }
                 // Real MAX reload when not ready: reload page, then wait for ready with backoff.
                 let needsReload = await MainActor.run { !self.maxReady }
@@ -746,6 +835,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             self.recovering = false
                             self.recoveryAttempt = 0
                             self.recoveryTask = nil
+                            self.eventLog.record(.recoverySuccess, level: .info)
                         }
                         return
                     }
@@ -767,9 +857,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         if !running && autoRecover && !userStopped && !recoveryBlocked { scheduleRecovery(reason: "готово к восстановлению") }
     }
     func prepareForTermination() {
+        terminating = true
         userStopped = true
         cancelRecovery()
-        stop("Приложение завершено.")
+        stop("Приложение завершено.", manual: true)
     }
     static func recoveryBackoffDelay(forAttempt attempt: Int) -> TimeInterval { RecoveryBackoff.delay(forAttempt: attempt) }
     static func isTemporaryError(_ error: Error) -> Bool {
@@ -786,7 +877,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     func copyDiagnostics() {
         let text = """
         Статус: \(status)
-        Бот: \(telegram == nil ? "не подключён" : "подключён"), токен сохранён: \(Secrets.read().isEmpty ? "нет" : "есть")
+        Telegram-бот: \(telegram == nil ? "не подключён" : "подключён")
         MAX: \(maxReady ? "подключён" : "нет"), событий: \(maxEvents), ready: \(readyCount), групп: \(maxGroups.count)
         Выбрано: MAX \(maxGroups.first(where: { $0.id == maxID })?.title ?? "—"), TG \(tgGroups.first(where: { $0.id == tgID })?.title ?? "—")
         JS: старт \(jsStart), сокет \(jsSocket), авторизация \(jsAuth)
@@ -797,6 +888,16 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         Перенесено: \(count)
         Восстановление: \(autoRecover ? "включено" : "выключено"), \(recovering ? "активно (попытка \(recoveryAttempt))" : "нет")
         """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func clearEventLog() { eventLog.clear() }
+    func copyEventLog() {
+        let text = eventLog.entries.map { entry in
+            let stamp = entry.timestamp.formatted(date: .numeric, time: .standard)
+            return "\(stamp) [\(entry.level.rawValue)] \(entry.event.displayText)"
+        }.joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
