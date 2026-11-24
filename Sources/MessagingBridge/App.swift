@@ -5,6 +5,9 @@ func loadTrayIcon(from bundle: Bundle = .main) -> NSImage? {
     let image = bundle.url(forResource: "TrayIcon", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
         ?? Bundle.module.image(forResource: "TrayIcon")
+        // SwiftPM also copies a standalone PNG for use when catalog lookup fails.
+        ?? Bundle.module.url(forResource: "TrayIcon", withExtension: "png")
+            .flatMap { NSImage(contentsOf: $0) }
     image?.isTemplate = false
     return image
 }
