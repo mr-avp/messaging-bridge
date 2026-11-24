@@ -190,6 +190,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             token = ""
             status = "Бот подключён. Добавьте его в группу Telegram и отправьте там /family, затем нажмите «Найти группу»."
         Task { await refreshSavedGroupTitles() }
+        } catch RelayError.storage {
+            status = "Не удалось сохранить токен. Проверьте доступ приложения к Связке ключей macOS."
         } catch let error as TelegramError {
             status = "Не удалось подключить бота: \(error.description). Токен и ответ API в лог не пишутся."
         } catch {
@@ -205,10 +207,12 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     func deleteToken() {
         guard !running, !busy else { return }
-        Secrets.delete()
+        let deleted = (try? Secrets.deleteChecked()) != nil
         telegram = nil
         token = ""
-        status = "Токен удалён из локального хранилища. Вставьте новый токен и нажмите «Подключить бота»."
+        status = deleted
+            ? "Токен удалён из локального хранилища. Вставьте новый токен и нажмите «Подключить бота»."
+            : "Не удалось полностью удалить сохранённый токен. Проверьте доступ к Связке ключей macOS и повторите удаление."
     }
     func restoreAndConnect() async {
         let saved = Secrets.read()
