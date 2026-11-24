@@ -41,16 +41,28 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var count = 0
     @Published var autoStart = false
     @Published var autoRelay = false
+    @Published var autoRecover = false
+    @Published var recovering = false
+    var autoRecovery: Bool { get { autoRecover } set { setAutoRecover(newValue) } }
+    var isRecovering: Bool { recovering }
+    var recoveryBackoff: RecoveryBackoff { RecoveryBackoff() }
+    @Published var recoveryAttempt = 0
     let max = MaxWeb()
-    private var telegram: Telegram?
+    var telegram: Telegram?
     private let downloadSession = URLSession(configuration: .ephemeral)
     private var poll: Task<Void, Never>?
     private var deliver: Task<Void, Never>?
     private var queue: [RelayMessage] = []
     private var seen = Set<String>()
     private var runID = UUID()
+    private var startupID: UUID?
     private var offset = 0
     private var didAutoStart = false
+    private var userStopped = false
+    private var recoveryBlocked = false
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryGeneration: Int = 0
+    private var wakeObserver: NSObjectProtocol?
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -59,8 +71,28 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         }
         loadConnections()
         loadSettings()
+        registerWakeObserver()
     }
     func openMAX() { max.load() }
+    private func registerWakeObserver() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleWake() }
+        }
+    }
+    func handleWake() {
+        guard autoRecover, !userStopped, !recoveryBlocked else { return }
+        // Real MAX reload with backoff; do not just wait for ready forever.
+        maxReady = false
+        max.load()
+        if running {
+            stop("MAX перезагружается после выхода из сна.", manual: false)
+        }
+        scheduleRecovery(reason: "выход из сна")
+    }
     func receive(_ data: [String: Any]) {
         switch data["kind"] as? String {
         case "ready":
@@ -74,6 +106,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                 ? "MAX подключён, но список групп пуст. Откройте нужный чат в MAX справа и нажмите «Обновить группы»."
                 : "MAX подключён. Выберите группу-источник и оставьте её открытой справа."
             autoStartIfNeeded()
+            if !running && autoRecover && !userStopped && !recoveryBlocked { scheduleRecovery(reason: "MAX готов") }
         case "groups":
             maxEvents += 1
             apply(groups: data["groups"] as? [[String: Any]] ?? [])
@@ -84,6 +117,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             }
         case "login-error":
             maxReady = false
+            recoveryBlocked = true
+            cancelRecovery()
             status = "MAX не принял вход (\(data["code"] ?? "?" )). Перезагрузите MAX и войдите заново."
         case "debug":
             let stage = data["stage"] as? String ?? "?"
@@ -119,7 +154,13 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             print("MessagingBridge MAX debug: \(lastDebug)")
         case "disconnected":
             maxReady = false
-            stop("MAX отключился. После восстановления соединения включите мост снова.")
+            max.load()
+            if autoRecover, !userStopped, !recoveryBlocked {
+                stop("MAX отключился. Восстановление будет выполнено автоматически.", manual: false)
+                scheduleRecovery(reason: "MAX отключился")
+            } else {
+                stop("MAX отключился. После восстановления соединения включите мост снова.", manual: false)
+            }
         case "nav":
             let stage = data["stage"] as? String ?? "?"
             let info = data["error"] as? String ?? (data["url"] as? String ?? "")
@@ -137,8 +178,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             guard RelayPolicy.accept(chat: chat, allowed: maxID, text: text, hasMedia: !media.isEmpty),
                   seen.insert("max:\(id)").inserted else { return }
             let caption = RelayPolicy.render(author: sender, text: text)
-            guard caption.utf16.count <= 4000 else { stop("Слишком длинное сообщение MAX. Мост остановлен."); return }
-            guard queue.count < 100, seen.count < 10000 else { stop("Очередь заполнена. Мост остановлен."); return }
+            guard caption.utf16.count <= 4000 else { recoveryBlocked = true; stop("Слишком длинное сообщение MAX. Мост остановлен.", manual: false); return }
+            guard queue.count < 100, seen.count < 10000 else { recoveryBlocked = true; stop("Очередь заполнена. Мост остановлен.", manual: false); return }
             queue.append(RelayMessage(id: id, chat: chat, sender: sender, text: text, media: media))
         default: break
         }
@@ -264,6 +305,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private func loadSettings() {
         autoStart = defaults.bool(forKey: "messaging-bridge.auto-start")
         autoRelay = defaults.bool(forKey: "messaging-bridge.auto-relay")
+        autoRecover = defaults.bool(forKey: "messaging-bridge.auto-recover")
     }
     func setAutoStart(
         _ enabled: Bool,
@@ -282,7 +324,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                     "Label": "local.messaging-bridge",
                     "ProgramArguments": [executablePath],
                     "RunAtLoad": true,
-                    "KeepAlive": false
+                    "KeepAlive": ["SuccessfulExit": false],
+                    "ThrottleInterval": 10
                 ]
                 try (plist as NSDictionary).write(to: url)
             } else {
@@ -303,11 +346,18 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         defaults.set(enabled, forKey: "messaging-bridge.auto-relay")
         if enabled { autoStartIfNeeded() }
     }
+    func setAutoRecover(_ enabled: Bool) {
+        autoRecover = enabled
+        defaults.set(enabled, forKey: "messaging-bridge.auto-recover")
+        recoveryBlocked = false
+        if !enabled { cancelRecovery() }
+        else if !running && !userStopped { scheduleRecovery(reason: "включено восстановление") }
+    }
     func applyStartupSettings() {
         autoStartIfNeeded()
     }
     func autoStartIfNeeded() {
-        guard autoRelay, !didAutoStart, !running, !busy, canStart else { return }
+        guard autoRelay, !didAutoStart, !running, !busy, canStart, !userStopped, !recoveryBlocked, recoveryTask == nil, !recovering else { return }
         didAutoStart = true
         Task { await start() }
     }
@@ -421,14 +471,24 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         }
         updateConnectionTitles()
     }
-    func start() async {
+    func start(cancelRecovery: Bool = true) async {
+        guard !userStopped, !recoveryBlocked else { return }
         guard canStart, !running, let api = telegram else { return }
-        busy = true; defer { busy = false }
+        guard !busy else { return }
+        if cancelRecovery { self.cancelRecovery() }
+        let thisStartup = UUID()
+        startupID = thisStartup
+        busy = true
+        defer {
+            if startupID == thisStartup { busy = false }
+        }
         do {
             // Drop pre-existing updates. The first run never exports old conversations.
             let latest = try await api.updates(offset: -1, timeout: 0)
+            guard startupID == thisStartup, !userStopped, !recoveryBlocked else { return }
             if let id = latest.last?["update_id"] as? Int { offset = id + 1 }
             try await max.configure(chat: maxID, enabled: true)
+            guard startupID == thisStartup, !userStopped, !recoveryBlocked else { return }
             queue.removeAll(); seen.removeAll(); runID = UUID()
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
@@ -503,7 +563,15 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                         }
                     }
                 } catch {
-                    if self.runID == current { self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.") }
+                    if self.runID == current {
+                        let temporary = Model.isTemporaryError(error)
+                        if temporary {
+                            self.stop("Передача остановлена из-за временной ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                            self.scheduleRecovery(reason: "временная ошибка связи")
+                        } else {
+                            self.recoveryBlocked = true; self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                        }
+                    }
                 }
             }
             deliver = Task { [weak self] in
@@ -576,14 +644,144 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                         } else { try await Task.sleep(for: .milliseconds(200)) }
                     }
                 } catch {
-                    if self.runID == current { self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.") }
+                    if self.runID == current {
+                        let temporary = Model.isTemporaryError(error)
+                        if temporary {
+                            self.stop("Передача остановлена из-за временной ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                            self.scheduleRecovery(reason: "временная ошибка связи")
+                        } else {
+                            self.recoveryBlocked = true; self.stop("Передача остановлена из-за ошибки связи. Проверьте последнее сообщение перед повторным запуском: оно могло быть доставлено.", manual: false)
+                        }
+                    }
                 }
             }
-        } catch { stop("Не удалось запустить мост. Проверьте вход в MAX и связь с Telegram.") }
+        } catch {
+            guard startupID == thisStartup else { return }
+            startupID = nil
+            busy = false
+            let temporary = Model.isTemporaryError(error)
+            if temporary {
+                stop("Не удалось запустить мост из-за временной ошибки связи. Повтор будет выполнен автоматически.", manual: false)
+                scheduleRecovery(reason: "временная ошибка запуска")
+            } else {
+                recoveryBlocked = true; stop("Не удалось запустить мост. Проверьте вход в MAX и связь с Telegram.", manual: false)
+            }
+        }
     }
-    func stop(_ reason: String = "Мост выключен.") {
-        running = false; busy = false; runID = UUID(); poll?.cancel(); deliver?.cancel(); queue.removeAll(); status = reason
+
+    func stop(_ reason: String = "Мост выключен.", manual: Bool = true) {
+        running = false; busy = false; startupID = nil; runID = UUID(); poll?.cancel(); deliver?.cancel()
+        if manual {
+            userStopped = true
+            cancelRecovery()
+        }
+        // Internal stops preserve recovery attempt/backoff and do not cancel an active recovery owner.
+        queue.removeAll(); status = reason
         Task { try? await max.configure(chat: maxID, enabled: false) }
+    }
+    func stopByUser(_ reason: String = "Мост выключен.") {
+        stop(reason, manual: true)
+    }
+    func cancelRecovery() {
+        recoveryTask?.cancel(); recoveryTask = nil; recovering = false; recoveryAttempt = 0
+        recoveryGeneration += 1
+    }
+    func scheduleRecovery(reason: String = "") {
+        scheduleAutoRecovery(reason: reason)
+    }
+    func scheduleAutoRecovery(reason: String = "") {
+        guard autoRecover, !userStopped, !recoveryBlocked, !running else { return }
+        guard recoveryTask == nil else { return }
+        recovering = true
+        let generation = recoveryGeneration
+        let startAttempt = recoveryAttempt
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            var attempt = startAttempt
+            while !Task.isCancelled {
+                let cont = await MainActor.run { () -> Bool in
+                    guard self.recoveryGeneration == generation else { return false }
+                    guard self.autoRecover, !self.userStopped, !self.recoveryBlocked, !self.running else { return false }
+                    return true
+                }
+                guard cont else { break }
+                if attempt > 0 {
+                    let delay = RecoveryBackoff.delay(forAttempt: attempt)
+                    await MainActor.run {
+                        self.recovering = true
+                        self.recoveryAttempt = attempt
+                        self.status = "Восстановление моста: попытка \(attempt + 1), ожидание \(Int(delay)) с. \(reason)".trimmingCharacters(in: .whitespaces)
+                    }
+                    do {
+                        try await Task.sleep(for: .seconds(delay))
+                    } catch {
+                        return
+                    }
+                    if Task.isCancelled { return }
+                    let cont2 = await MainActor.run { () -> Bool in
+                        guard self.recoveryGeneration == generation else { return false }
+                        guard self.autoRecover, !self.userStopped, !self.recoveryBlocked, !self.running else { return false }
+                        return true
+                    }
+                    guard cont2 else { break }
+                }
+                attempt += 1
+                await MainActor.run {
+                    self.recovering = true
+                    self.recoveryAttempt = attempt
+                }
+                // Real MAX reload when not ready: reload page, then wait for ready with backoff.
+                let needsReload = await MainActor.run { !self.maxReady }
+                if needsReload {
+                    await MainActor.run { self.max.load() }
+                }
+                // Try to restore Telegram if needed.
+                await self.restoreAndConnectIfPossible()
+                let can = await MainActor.run { self.canStart }
+                if can {
+                    await self.start(cancelRecovery: false)
+                    let done = await MainActor.run { self.running }
+                    if done {
+                        await MainActor.run {
+                            self.recovering = false
+                            self.recoveryAttempt = 0
+                            self.recoveryTask = nil
+                        }
+                        return
+                    }
+                }
+                if Task.isCancelled { return }
+            }
+            await MainActor.run {
+                if self.recoveryGeneration == generation {
+                    self.recoveryTask = nil
+                    self.recovering = false
+                }
+            }
+        }
+    }
+    private func restoreAndConnectIfPossible() async {
+        await restoreAndConnect()
+    }
+    func autoRecoverIfNeeded() {
+        if !running && autoRecover && !userStopped && !recoveryBlocked { scheduleRecovery(reason: "готово к восстановлению") }
+    }
+    func prepareForTermination() {
+        userStopped = true
+        cancelRecovery()
+        stop("Приложение завершено.")
+    }
+    static func recoveryBackoffDelay(forAttempt attempt: Int) -> TimeInterval { RecoveryBackoff.delay(forAttempt: attempt) }
+    static func isTemporaryError(_ error: Error) -> Bool {
+        if let tg = error as? TelegramError {
+            if tg.code == 429 || tg.code == 408 { return true }
+            if tg.code >= 500 { return true }
+            if tg.code <= 0 { return true }
+            return false
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain { return true }
+        return false
     }
     func copyDiagnostics() {
         let text = """
@@ -597,9 +795,19 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         Кадры: \(lastFrames.isEmpty ? "—" : lastFrames)
         Отладка: \(lastDebug.isEmpty ? "—" : lastDebug)
         Перенесено: \(count)
+        Восстановление: \(autoRecover ? "включено" : "выключено"), \(recovering ? "активно (попытка \(recoveryAttempt))" : "нет")
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
+}
+struct RecoveryBackoff {
+    var base: TimeInterval = 2
+    var maxDelay: TimeInterval = 60
+    func delay(forAttempt attempt: Int) -> TimeInterval {
+        let exponent = min(max(0, attempt - 1), 10)
+        return min(base * pow(2.0, Double(exponent)), maxDelay)
+    }
+    static func delay(forAttempt attempt: Int) -> TimeInterval { RecoveryBackoff().delay(forAttempt: attempt) }
 }
 private func maxInt(_ a: Int, _ b: Int) -> Int { a > b ? a : b }

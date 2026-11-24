@@ -14,8 +14,9 @@ func loadTrayIcon(from bundle: Bundle = .main) -> NSImage? {
 
 private let trayIcon = loadTrayIcon()
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var closeObserver: NSObjectProtocol?
+    private var keyObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         closeObserver = NotificationCenter.default.addObserver(
@@ -24,21 +25,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { note in
             guard let window = note.object as? NSWindow, window.title.contains("Мост сообщений") else { return }
+            // Closing must never destroy the window/scene; hide it instead.
+            window.orderOut(nil)
             NSApp.setActivationPolicy(.accessory)
             NSApp.deactivate()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.showWindow()
-            NSApp.setActivationPolicy(.accessory)
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let window = note.object as? NSWindow,
+                  window.title.contains("Мост сообщений") else { return }
+            // Intercept the red close button so it hides instead of destroying the window/scene.
+            window.delegate = self
+            window.isReleasedWhenClosed = false
+        }
+        // Cold start in the background: model, MAX web view and startup exist without any settings window.
+        NSApp.setActivationPolicy(.accessory)
+        Task { @MainActor in
+            Model.shared.openMAX()
+            await Model.shared.restoreAndConnect()
+            Model.shared.applyStartupSettings()
+            for window in NSApp.windows where window.title.contains("Мост сообщений") { window.orderOut(nil) }
         }
     }
 
     deinit {
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    private func showWindow() {
-        guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Model.shared.prepareForTermination()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Reopen (Dock/Finder/Spotlight) must reuse the existing window, not create another one.
+        showWindow()
+        return false
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender.title.contains("Мост сообщений") else { return true }
+        sender.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+        NSApp.deactivate()
+        return false
+    }
+
+    private func mainWindow() -> NSWindow? {
+        NSApp.windows.first(where: { $0.title.contains("Мост сообщений") })
+    }
+
+    func showWindow() {
+        guard let window = mainWindow() else { return }
         if let screen = NSScreen.main {
             let frame = window.frame
             let screenFrame = screen.visibleFrame
@@ -51,29 +93,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     func hideWindow() {
-        guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
+        guard let window = mainWindow() else { return }
         window.orderOut(nil)
         NSApp.setActivationPolicy(.accessory)
         NSApp.deactivate()
     }
+    func toggleWindow() {
+        if let window = mainWindow(), window.isVisible {
+            hideWindow()
+        } else {
+            showWindow()
+        }
+    }
 }
 
 private struct MenuBarContentView: View {
-    let onHide: () -> Void
+    let appDelegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var model = Model.shared
 
     var body: some View {
-        Button("Показать / скрыть окно") {
-            if let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }), window.isVisible {
-                onHide()
+        Text(model.recovering ? "Восстановление моста…" : (model.running ? "Мост работает" : "Мост остановлен"))
+            .font(.headline)
+        Text(model.status).font(.caption).fixedSize(horizontal: false, vertical: true)
+        Divider()
+        Button("Открыть настройки") {
+            if NSApp.windows.contains(where: { $0.title.contains("Мост сообщений") }) {
+                appDelegate.showWindow()
             } else {
-                NSApp.setActivationPolicy(.regular)
                 openWindow(id: "main")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    NSApp.setActivationPolicy(.accessory)
+                    appDelegate.showWindow()
                 }
             }
         }
+        Button("Остановить мост") { model.stopByUser() }
+            .disabled(!model.running && !model.recovering && !model.busy)
         Divider()
         Button("Выйти") { NSApp.terminate(nil) }
     }
@@ -83,7 +138,7 @@ private struct MenuBarContentView: View {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var model = Model.shared
     var body: some Scene {
-        WindowGroup("Мост сообщений (Messaging Bridge)", id: "main") {
+        Window("Мост сообщений (Messaging Bridge)", id: "main") {
             HSplitView {
                 ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -135,12 +190,13 @@ private struct MenuBarContentView: View {
                     Divider()
                     Toggle("Автозапуск при входе в систему", isOn: Binding(get: { model.autoStart }, set: { model.setAutoStart($0) }))
                     Toggle("Автовключение моста при запуске", isOn: Binding(get: { model.autoRelay }, set: { model.setAutoRelay($0) }))
+                    Toggle("Автовосстановление после сна и сбоев", isOn: Binding(get: { model.autoRecover }, set: { model.setAutoRecover($0) }))
                     Divider()
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text("Перенесено: \(model.count)").monospacedDigit()
                     HStack {
                         Button("Включить для выбранной группы") { Task { await model.start() } }.disabled(!model.canStart || model.running)
-                        Button("Стоп") { model.stop() }.disabled(!model.running)
+                        Button("Стоп") { model.stopByUser() }.disabled(!model.running && !model.recovering && !model.busy)
                     }
                     Spacer()
                     Text("Только новые сообщения: текст, фото, видео, GIF и документы, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в локальном хранилище приложения. Тексты сообщений не пишутся в логи.")
@@ -154,7 +210,7 @@ private struct MenuBarContentView: View {
             .task { await model.restoreAndConnect(); model.applyStartupSettings() }
         }
         MenuBarExtra {
-            MenuBarContentView(onHide: { appDelegate.hideWindow() })
+            MenuBarContentView(appDelegate: appDelegate)
         } label: {
             if let trayIcon {
                 Image(nsImage: trayIcon)
