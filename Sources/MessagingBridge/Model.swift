@@ -454,10 +454,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             guard RelayPolicy.accept(chat: id.stringValue, allowed: self.tgID, text: content,
                                                      bot: sender["is_bot"] as? Bool ?? false,
                                                      hasMedia: media != nil) else { continue }
-                            let renderedParts = RelayPolicy.telegramParts(
+                            let renderedParts = RelayPolicy.plainParts(
                                 author: Self.telegramName(sender),
                                 text: content,
-                                limit: TelegramLimits.messageUnits
+                                limit: media == nil ? TelegramLimits.messageUnits : TelegramLimits.captionUnits
                             )
                             let rendered = renderedParts.first ?? ""
                             if let media {
