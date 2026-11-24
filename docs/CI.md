@@ -14,16 +14,17 @@ Workflow [Bridge CI](../.github/workflows/ci.yml) запускается на pu
 export DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer
 swift test
 node scripts/test-max-filter.js
+node scripts/test-emoji-gif.js
 scripts/build.sh
 ```
 
 `Package.swift` объявляет исполняемую цель `MessagingBridge`, её ресурсы
 и цель `MessagingBridgeTests`. Для пакета нужен Swift 6.0 или новее,
 минимальная версия macOS для приложения — 14.0. `swift test` собирает
-пакет и запускает тесты Swift. JS-тест использует встроенные модули Node.js
-и сверяет логику relay в `MaxWeb.swift` и `Resources/relay.js` цели Swift,
-затем проверяет её на имитациях WebSocket и HTTP. Установка npm-пакетов
-не требуется.
+пакет и запускает тесты Swift. JS-тесты используют встроенные модули Node.js
+и сверяют логику relay в `MaxWeb.swift` и `Resources/relay.js` цели Swift,
+затем проверяют её на имитациях WebSocket и HTTP. Установка npm-пакетов
+не требуется. `test-emoji-gif.js` отдельно проверяет Unicode-эмодзи и GIF.
 
 `scripts/build.sh` выполняет release-сборку SwiftPM и формирует
 `dist/MessagingBridge.app`. Внутри находятся бинарник

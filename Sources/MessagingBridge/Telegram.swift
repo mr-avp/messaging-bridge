@@ -10,6 +10,7 @@ struct TelegramError: Error, CustomStringConvertible {
 
 enum TelegramMediaKind: String {
     case photo
+    case animation
     case video
     case document
 }
@@ -17,12 +18,16 @@ enum TelegramMediaKind: String {
 final class Telegram {
     let token: String
     private let session: URLSession
-    init(token: String) {
+    init(token: String, session: URLSession? = nil) {
         self.token = token
-        let config = URLSessionConfiguration.ephemeral
-        config.urlCache = nil
-        config.timeoutIntervalForRequest = 40
-        session = URLSession(configuration: config)
+        if let session {
+            self.session = session
+        } else {
+            let config = URLSessionConfiguration.ephemeral
+            config.urlCache = nil
+            config.timeoutIntervalForRequest = 40
+            self.session = URLSession(configuration: config)
+        }
     }
 
     func call(_ method: String, _ payload: [String: Any] = [:]) async throws -> Any {
@@ -63,7 +68,7 @@ final class Telegram {
     }
 
     func send(chat: String, text: String) async throws {
-        guard text.utf16.count <= 4000 else { throw RelayError.configuration }
+        guard RelayPolicy.visibleUTF16Count(text) <= TelegramLimits.messageUnits else { throw RelayError.configuration }
         _ = try await callWithRetry("sendMessage", ["chat_id": chat, "text": text, "parse_mode": "HTML", "link_preview_options": ["is_disabled": true]])
     }
 
@@ -72,16 +77,43 @@ final class Telegram {
         let key: String
         switch kind {
         case .photo: method = "sendPhoto"; key = "photo"
+        case .animation: method = "sendAnimation"; key = "animation"
         case .video: method = "sendVideo"; key = "video"
         case .document: method = "sendDocument"; key = "document"
         }
         var payload: [String: Any] = ["chat_id": chat, key: url]
-        if !caption.isEmpty { payload["caption"] = String(caption.prefix(1024)); payload["parse_mode"] = "HTML" }
+        if !caption.isEmpty {
+            guard RelayPolicy.visibleUTF16Count(caption) <= TelegramLimits.captionUnits else { throw RelayError.configuration }
+            payload["caption"] = caption
+            payload["parse_mode"] = "HTML"
+        }
         if kind == .video { payload["supports_streaming"] = true }
         _ = try await callWithRetry(method, payload)
     }
 
-    func sendDocument(chat: String, data: Data, fileName: String, caption: String = "") async throws {
+    func sendDocument(chat: String, data: Data, fileName: String, mimeType: String = "application/octet-stream", caption: String = "") async throws {
+        try await sendUpload(
+            method: "sendDocument", field: "document",
+            chat: chat, data: data, fileName: fileName, mimeType: mimeType, caption: caption
+        )
+    }
+
+    func sendAnimation(chat: String, data: Data, fileName: String, mimeType: String = "image/gif", caption: String = "") async throws {
+        try await sendUpload(
+            method: "sendAnimation", field: "animation",
+            chat: chat, data: data, fileName: fileName, mimeType: mimeType, caption: caption
+        )
+    }
+
+    private func sendUpload(
+        method: String,
+        field: String,
+        chat: String,
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        caption: String
+    ) async throws {
         var attempt = 0
         while true {
             do {
@@ -93,13 +125,17 @@ final class Telegram {
                     body.append("\(value)\r\n".data(using: .utf8)!)
                 }
                 appendField("chat_id", chat)
-                if !caption.isEmpty { appendField("caption", String(caption.prefix(1024))); appendField("parse_mode", "HTML") }
+                if !caption.isEmpty {
+                    guard RelayPolicy.visibleUTF16Count(caption) <= TelegramLimits.captionUnits else { throw RelayError.configuration }
+                    appendField("caption", caption)
+                    appendField("parse_mode", "HTML")
+                }
                 body.append("--\(boundary)\r\n".data(using: .utf8)!)
-                body.append("Content-Disposition: form-data; name=\"document\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
-                body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"\(field)\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+                body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
                 body.append(data)
                 body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-                guard let url = URL(string: "https://api.telegram.org/bot\(token)/sendDocument") else { throw RelayError.configuration }
+                guard let url = URL(string: "https://api.telegram.org/bot\(token)/\(method)") else { throw RelayError.configuration }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -111,7 +147,7 @@ final class Telegram {
                     let detail = json?["description"] as? String ?? "HTTP \(status)"
                     let params = json?["parameters"] as? [String: Any]
                     let retry = (params?["retry_after"] as? Int).map { TimeInterval($0) }
-                    throw TelegramError(method: "sendDocument", code: (json?["error_code"] as? Int) ?? status, detail: detail, retryAfter: retry)
+                    throw TelegramError(method: method, code: (json?["error_code"] as? Int) ?? status, detail: detail, retryAfter: retry)
                 }
                 return
             } catch let error as TelegramError where error.code == 429 && attempt < 4 {

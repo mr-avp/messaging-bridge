@@ -346,9 +346,24 @@
         }
         return '';
       };
+      const mimeOf = value => {
+        const text = asString(value);
+        const path = text.split('?')[0].split('#')[0];
+        const dot = path.lastIndexOf('.');
+        const ext = dot >= 0 ? path.slice(dot + 1).toLowerCase() : '';
+        return {
+          gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+          webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
+          mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/quicktime',
+          webm: 'video/webm', mkv: 'video/x-matroska',
+          pdf: 'application/pdf', zip: 'application/zip', txt: 'text/plain',
+          json: 'application/json'
+        }[ext] || '';
+      };
       const mediaFromAttach = (attach, message, chat) => {
         if (!attach || typeof attach !== 'object') return null;
         const type = asString(attach._type);
+        const gifHint = attach.isGif === true || attach.isGIF === true || attach.gif === true || attach.animated === true;
         if (type === 'PHOTO') {
           const url = urlOf(attach.baseUrl || attach.url || attach.previewUrl);
           return url ? {kind: 'photo', url: url} : null;
@@ -356,17 +371,30 @@
         if (type === 'VIDEO') {
           const token = asString(attach.token);
           const videoId = bigintOrNull(attach.videoId ?? attach.id);
-          return token && videoId !== null
-            ? {kind: 'video', videoId: videoId.toString(), token: token}
-            : null;
+          if (!token || videoId === null) return null;
+          const name = asString(attach.name || attach.fileName || attach.filename);
+          let mime = asString(attach.mimeType || attach.mime_type || attach.mime);
+          if (!mime && gifHint) mime = 'image/gif';
+          const item = {kind: 'video', videoId: videoId.toString(), token: token};
+          if (name) item.name = name;
+          if (mime) item.mime = mime;
+          return item;
         }
         if (type === 'FILE') {
           const url = urlOf(attach.url || attach.baseUrl || attach.previewUrl);
-          const name = asString(attach.name);
-          if (url) return {kind: 'file', url: url, name: name};
+          const name = asString(attach.name || attach.fileName || attach.filename);
+          let mime = asString(attach.mimeType || attach.mime_type || attach.mime);
+          if (!mime && gifHint) mime = 'image/gif';
+          if (url) {
+            const item = {kind: 'file', url: url, name: name};
+            if (mime) item.mime = mime;
+            return item;
+          }
           const fileId = bigintOrNull(attach.fileId ?? attach.id);
           if (fileId !== null) {
-            return {kind: 'file', fileId: fileId.toString(), chatId: asString(chat), messageId: asString(message && message.id), name: name};
+            const item = {kind: 'file', fileId: fileId.toString(), chatId: asString(chat), messageId: asString(message && message.id), name: name};
+            if (mime) item.mime = mime;
+            return item;
           }
           return null;
         }
@@ -376,7 +404,12 @@
         const out = [];
         for (const item of items) {
           if (item.kind === 'photo') { out.push({kind: 'photo', url: item.url}); continue; }
-          if (item.kind === 'file' && item.url) { out.push({kind: 'file', url: item.url, name: item.name}); continue; }
+          if (item.kind === 'file' && item.url) {
+            const media = {kind: 'file', url: item.url, name: item.name};
+            if (item.mime) media.mime = item.mime;
+            out.push(media);
+            continue;
+          }
           try {
             if (item.kind === 'video') {
               const payload = await request(83, {
@@ -387,7 +420,12 @@
                 messageId: bigintOrNull(messageId)
               });
               const url = urlOf(payload && (payload.MP4_720 || payload.MP4_480 || payload.MP4_360 || payload.MP4_240 || payload.MP4_144 || payload.DASH || payload.HLS || payload.EXTERNAL));
-              if (url) out.push({kind: 'video', url: url});
+              if (url) {
+                const media = {kind: 'video', url: url};
+                if (item.name) media.name = item.name;
+                if (item.mime) media.mime = item.mime;
+                out.push(media);
+              }
               else post({kind:'debug', stage:'media', error:'video url missing'});
             } else if (item.kind === 'file') {
               const payload = await request(88, {
@@ -397,7 +435,11 @@
                 itemType: 'REGULAR'
               });
               const url = urlOf(payload && payload.url);
-              if (url) out.push({kind: 'file', url: url, name: item.name});
+              if (url) {
+                const media = {kind: 'file', url: url, name: item.name};
+                if (item.mime) media.mime = item.mime;
+                out.push(media);
+              }
               else post({kind:'debug', stage:'media', error:'file url missing'});
             }
           } catch (_) {
@@ -480,17 +522,18 @@
         }, 'send').then(recordSent);
       };
 
-      state.sendMedia = async (chat, kind, base64, text, fileName) => {
+      state.sendMedia = async (chat, kind, base64, text, fileName, mime) => {
         if (!state.enabled || !state.loggedIn || String(chat) !== String(state.chat)) throw new Error('offline');
         const id = Number(chat);
         if (!Number.isSafeInteger(id)) throw new Error('chat');
         const bytes = bytesFromBase64(base64);
+        const type = asString(mime) || mimeOf(fileName);
         let attach;
         if (kind === 'photo') {
           const ack = await request(80, {count: 1}, 'upload-url');
           if (!ack || !ack.url) throw new Error('upload url');
           const form = new FormData();
-          form.append('file', new Blob([bytes], {type: 'image/jpeg'}), fileName || 'photo.jpg');
+          form.append('file', new Blob([bytes], {type: type || 'image/jpeg'}), fileName || 'photo.jpg');
           const uploaded = await uploadResult(await fetch(ack.url, {method: 'POST', body: form}));
           const photos = uploaded.photos;
           const token = Array.isArray(photos) ? (photos[0] && photos[0].token)
@@ -503,7 +546,7 @@
           const videoId = info ? bigintOrNull(info.videoId) : null;
           if (!info || !info.url || !info.token || videoId === null) throw new Error('upload info');
           const headers = {
-            'Content-Type': 'application/octet-stream',
+            'Content-Type': type || 'video/mp4',
             'Content-Disposition': 'attachment; filename=' + encodeURIComponent(fileName || 'video.mp4'),
             'Content-Range': 'bytes 0-' + (bytes.length - 1) + '/' + bytes.length
           };
@@ -516,7 +559,7 @@
           const fileId = info ? bigintOrNull(info.fileId) : null;
           if (!info || !info.url || fileId === null) throw new Error('upload info');
           const headers = {
-            'Content-Type': 'application/octet-stream',
+            'Content-Type': type || 'application/octet-stream',
             'Content-Disposition': 'attachment; filename=' + encodeURIComponent(fileName || 'file'),
             'Content-Range': 'bytes 0-' + (bytes.length - 1) + '/' + bytes.length
           };
@@ -649,5 +692,5 @@
         }
       };
 
-      state.__test = {decode: decodeMsgpack, encode: encodeMsgpack, parse: parseFrame, frame: makeFrame, lz4: lz4Decompress, groups: groupsOf};
+      state.__test = {decode: decodeMsgpack, encode: encodeMsgpack, parse: parseFrame, frame: makeFrame, lz4: lz4Decompress, groups: groupsOf, mimeOf: mimeOf};
     })();

@@ -37,5 +37,8 @@ jobs:
       - name: MAX relay tests
         run: node scripts/test-max-filter.js
 
+      - name: Emoji and GIF relay tests
+        run: node scripts/test-emoji-gif.js
+
       - name: Build app bundle
         run: scripts/build.sh
