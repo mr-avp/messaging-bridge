@@ -78,6 +78,7 @@ private struct MenuBarContentView: View {
     var body: some Scene {
         WindowGroup("Мост сообщений (Messaging Bridge)", id: "main") {
             HSplitView {
+                ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Мост сообщений").font(.largeTitle.bold())
                     Text("Messaging Bridge · Connecting people").foregroundStyle(.secondary)
@@ -137,7 +138,10 @@ private struct MenuBarContentView: View {
                     Spacer()
                     Text("Только новые сообщения: текст, фото и видео, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в локальном хранилище приложения. Тексты сообщений не пишутся в логи.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }.padding(20).frame(minWidth: 380)
+                }
+                .padding(20)
+                .frame(minWidth: 380)
+                }
                 MaxPanel(web: model.max).frame(minWidth: 420, minHeight: 500)
             }.frame(minWidth: 900, minHeight: 600)
             .task { await model.restoreAndConnect(); model.applyStartupSettings() }
