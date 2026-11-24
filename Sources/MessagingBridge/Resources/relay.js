@@ -651,4 +651,3 @@
 
       state.__test = {decode: decodeMsgpack, encode: encodeMsgpack, parse: parseFrame, frame: makeFrame, lz4: lz4Decompress, groups: groupsOf};
     })();
-    

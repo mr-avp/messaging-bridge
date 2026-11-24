@@ -51,7 +51,9 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private var runID = UUID()
     private var offset = 0
     private var didAutoStart = false
-    init() {
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         max.onMessage = { [weak self] data in
             self?.receive(data)
         }
@@ -260,42 +262,45 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         return data
     }
     private func loadSettings() {
-        let defaults = UserDefaults.standard
         autoStart = defaults.bool(forKey: "messaging-bridge.auto-start")
         autoRelay = defaults.bool(forKey: "messaging-bridge.auto-relay")
     }
-    private func saveSettings() {
-        let defaults = UserDefaults.standard
-        defaults.set(autoStart, forKey: "messaging-bridge.auto-start")
-        defaults.set(autoRelay, forKey: "messaging-bridge.auto-relay")
-    }
-    func setAutoStart(_ enabled: Bool) {
-        autoStart = enabled
-        saveSettings()
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/local.messaging-bridge.plist")
+    func setAutoStart(
+        _ enabled: Bool,
+        launchAgentURL url: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/local.messaging-bridge.plist"),
+        executablePath: String? = Bundle.main.executablePath
+    ) {
         do {
             if enabled {
-                let executable = Bundle.main.executablePath ?? ""
+                guard let executablePath, !executablePath.isEmpty else {
+                    status = "Не удалось изменить автозапуск: путь к приложению пуст."
+                    return
+                }
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let plist: [String: Any] = [
                     "Label": "local.messaging-bridge",
-                    "ProgramArguments": [executable],
+                    "ProgramArguments": [executablePath],
                     "RunAtLoad": true,
                     "KeepAlive": false
                 ]
                 try (plist as NSDictionary).write(to: url)
             } else {
-                if FileManager.default.fileExists(atPath: url.path) {
+                do {
                     try FileManager.default.removeItem(at: url)
+                } catch CocoaError.fileNoSuchFile {
+                    // The agent is already absent.
                 }
             }
+            defaults.set(enabled, forKey: "messaging-bridge.auto-start")
+            autoStart = enabled
         } catch {
             status = "Не удалось изменить автозапуск: \(error.localizedDescription)"
         }
     }
     func setAutoRelay(_ enabled: Bool) {
         autoRelay = enabled
-        saveSettings()
+        defaults.set(enabled, forKey: "messaging-bridge.auto-relay")
         if enabled { autoStartIfNeeded() }
     }
     func applyStartupSettings() {
@@ -385,11 +390,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     private func persistConnections() {
         if let data = try? JSONEncoder().encode(connections) {
-            UserDefaults.standard.set(data, forKey: "messaging-bridge.connections")
+            defaults.set(data, forKey: "messaging-bridge.connections")
         }
     }
     private func loadConnections() {
-        let defaults = UserDefaults.standard
         let isTest = NSClassFromString("XCTest") != nil
         let legacyDefaults = isTest ? nil : UserDefaults(suiteName: "local.family-relay")
         let oldPlist = NSHomeDirectory() + "/Library/Preferences/local.family-relay.plist"

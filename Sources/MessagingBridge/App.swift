@@ -1,12 +1,15 @@
 import SwiftUI
 import AppKit
 
-private let trayIcon: NSImage = {
-    let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "png")
-    let image = url.flatMap { NSImage(contentsOf: $0) } ?? NSImage(size: NSSize(width: 22, height: 22))
-    image.isTemplate = false
+func loadTrayIcon(from bundle: Bundle = .main) -> NSImage? {
+    let image = bundle.url(forResource: "TrayIcon", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+        ?? Bundle.module.image(forResource: "TrayIcon")
+    image?.isTemplate = false
     return image
-}()
+}
+
+private let trayIcon = loadTrayIcon()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var closeObserver: NSObjectProtocol?
@@ -150,7 +153,11 @@ private struct MenuBarContentView: View {
         MenuBarExtra {
             MenuBarContentView(onHide: { appDelegate.hideWindow() })
         } label: {
-            Image(nsImage: trayIcon)
+            if let trayIcon {
+                Image(nsImage: trayIcon)
+            } else {
+                Image(systemName: "arrow.left.arrow.right")
+            }
         }
     }
 }

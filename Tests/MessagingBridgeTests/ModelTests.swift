@@ -3,23 +3,50 @@ import XCTest
 
 @MainActor
 final class ModelTests: XCTestCase {
-    private var savedConnections: Data?
-    private var savedLegacyConnections: Data?
-
-    override func setUp() {
-        super.setUp()
-        let defaults = UserDefaults.standard
-        savedConnections = defaults.data(forKey: "messaging-bridge.connections")
-        savedLegacyConnections = defaults.data(forKey: "family-relay.connections")
-        defaults.removeObject(forKey: "messaging-bridge.connections")
-        defaults.removeObject(forKey: "family-relay.connections")
-    }
+    private let suiteName = "MessagingBridgeTests." + UUID().uuidString
+    private var defaults: UserDefaults { UserDefaults(suiteName: suiteName)! }
 
     override func tearDown() {
-        let defaults = UserDefaults.standard
-        if let savedConnections { defaults.set(savedConnections, forKey: "messaging-bridge.connections") }
-        if let savedLegacyConnections { defaults.set(savedLegacyConnections, forKey: "family-relay.connections") }
+        defaults.removePersistentDomain(forName: suiteName)
         super.tearDown()
+    }
+
+    func testAutoStartPersistsOnlyAfterLaunchAgentChange() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("LaunchAgents/local.messaging-bridge.plist")
+        let key = "messaging-bridge.auto-start"
+        let model = Model(defaults: defaults)
+
+        model.setAutoStart(true, launchAgentURL: url, executablePath: "")
+        XCTAssertFalse(model.autoStart)
+        XCTAssertNil(defaults.object(forKey: key))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+
+        try Data().write(to: root)
+        model.setAutoStart(true, launchAgentURL: url, executablePath: "/test/MessagingBridge")
+        XCTAssertFalse(model.autoStart)
+        XCTAssertNil(defaults.object(forKey: key))
+        try FileManager.default.removeItem(at: root)
+
+        model.setAutoStart(true, launchAgentURL: url, executablePath: "/test/MessagingBridge")
+        XCTAssertTrue(model.autoStart)
+        XCTAssertTrue(defaults.bool(forKey: key))
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: url), format: nil
+        ) as? [String: Any])
+        XCTAssertEqual(plist["ProgramArguments"] as? [String], ["/test/MessagingBridge"])
+
+        model.setAutoStart(false, launchAgentURL: url)
+        XCTAssertFalse(model.autoStart)
+        XCTAssertFalse(defaults.bool(forKey: key))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testTrayIconLoadsFromSwiftPMResources() throws {
+        let image = try XCTUnwrap(loadTrayIcon())
+        XCTAssertGreaterThan(image.size.width, 0)
+        XCTAssertFalse(image.isTemplate)
     }
 
     func testMaxLoadsOfficialWebClient() {
@@ -28,13 +55,13 @@ final class ModelTests: XCTestCase {
     }
 
     func testReadySetsMaxReady() {
-        let model = Model()
+        let model = Model(defaults: defaults)
         model.receive(["kind": "ready", "groups": []])
         XCTAssertTrue(model.maxReady, "receive(ready) must set maxReady=true")
     }
 
     func testAutoSelectsFirstAvailableGroup() {
-        let model = Model()
+        let model = Model(defaults: defaults)
         model.receive(["kind": "ready", "groups": [
             ["id": "-814", "title": "Family chat"],
             ["id": "-815", "title": "Another chat"]
@@ -43,7 +70,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testPartialGroupUpdateKeepsSelection() {
-        let model = Model()
+        let model = Model(defaults: defaults)
         model.receive(["kind": "ready", "groups": [
             ["id": "-100", "title": "test_max"],
             ["id": "-200", "title": "other"]
