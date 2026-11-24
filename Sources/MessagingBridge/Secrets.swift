@@ -3,10 +3,11 @@ import Security
 
 struct Secrets {
     static let service = "local.messaging-bridge"
-    private static let storage = TokenStorage(keychain: KeychainTokenStore(), legacy: LegacyTokenStore())
+    static let storage = TokenStorage(keychain: KeychainTokenStore(), legacy: LegacyTokenStore())
 
     static func save(_ value: String) throws { try storage.save(value) }
     static func read() -> String { storage.read() }
+    static func readChecked() throws -> String? { try storage.readChecked() }
     static func delete() { try? deleteChecked() }
     static func deleteChecked() throws { try storage.delete() }
 }
@@ -30,19 +31,17 @@ final class TokenStorage {
         self.legacy = legacy
     }
 
-    func read() -> String {
-        lock.withLock {
-            do {
-                if let value = try keychain.read() { return value }
-                guard let value = try legacy.read(), !value.isEmpty else { return "" }
-                // Keep the old value usable and retry migration on a later read if the write fails.
-                if (try? keychain.save(value)) != nil {
-                    try? legacy.delete()
-                }
-                return value
-            } catch {
-                return ""
+    func read() -> String { (try? readChecked()) ?? "" }
+
+    func readChecked() throws -> String? {
+        try lock.withLock {
+            if let value = try keychain.read() { return value.isEmpty ? nil : value }
+            guard let value = try legacy.read(), !value.isEmpty else { return nil }
+            // Keep the old value usable and retry migration on a later read if the write fails.
+            if (try? keychain.save(value)) != nil {
+                try? legacy.delete()
             }
+            return value
         }
     }
 
@@ -63,6 +62,8 @@ final class TokenStorage {
 }
 
 private struct KeychainTokenStore: TokenStore {
+    // Use the classic macOS Keychain and its item access controls. The
+    // kSecAttrAccessible classes belong to the data protection Keychain.
     private var item: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,

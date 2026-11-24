@@ -8,10 +8,12 @@ final class SecretsTests: XCTestCase {
         var failWrite = false
         var failDelete = false
         var writes = 0
+        var reads = 0
 
         init(_ value: String? = nil) { self.value = value }
 
         func read() throws -> String? {
+            reads += 1
             if failRead { throw RelayError.storage }
             return value
         }
@@ -51,7 +53,10 @@ final class SecretsTests: XCTestCase {
         let legacy = Store("old")
         keychain.failRead = true
 
-        XCTAssertEqual(TokenStorage(keychain: keychain, legacy: legacy).read(), "")
+        let storage = TokenStorage(keychain: keychain, legacy: legacy)
+        XCTAssertThrowsError(try storage.readChecked())
+        XCTAssertEqual(storage.read(), "")
+        XCTAssertEqual(legacy.reads, 0)
         XCTAssertEqual(keychain.value, "current")
         XCTAssertEqual(keychain.writes, 0)
         XCTAssertEqual(legacy.value, "old")
@@ -88,5 +93,59 @@ final class SecretsTests: XCTestCase {
         try storage.delete()
         XCTAssertEqual(TokenStorage(keychain: keychain, legacy: legacy).read(), "")
         XCTAssertNil(keychain.value)
+    }
+
+    @MainActor
+    func testManualAndAutomaticRestoreReportReadFailureWithoutUsingLegacy() async {
+        let keychain = Store()
+        let legacy = Store("synthetic-legacy")
+        keychain.failRead = true
+        let suite = "MessagingBridgeTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = Model(defaults: defaults, secrets: TokenStorage(keychain: keychain, legacy: legacy))
+        model.token = "synthetic-draft"
+
+        model.restoreToken()
+        XCTAssertTrue(model.status.contains("Не удалось прочитать"))
+        XCTAssertEqual(model.token, "synthetic-draft")
+
+        model.status = ""
+        await model.restoreAndConnect()
+        XCTAssertTrue(model.status.contains("Не удалось прочитать"))
+        XCTAssertEqual(model.token, "synthetic-draft")
+        XCTAssertFalse(model.hasTelegram)
+        XCTAssertEqual(legacy.reads, 0)
+
+        keychain.failRead = false
+        legacy.value = nil
+        model.restoreToken()
+        XCTAssertTrue(model.status.contains("Токен не найден"))
+        XCTAssertEqual(model.token, "")
+    }
+
+    @MainActor
+    func testModelPreservesTokenOnPartialDeleteAndClearsItAfterRetry() {
+        let keychain = Store("synthetic-current")
+        let legacy = Store("synthetic-legacy")
+        let suite = "MessagingBridgeTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = Model(defaults: defaults, secrets: TokenStorage(keychain: keychain, legacy: legacy))
+        model.restoreToken()
+        keychain.failDelete = true
+
+        model.deleteToken()
+        XCTAssertTrue(model.status.contains("Не удалось полностью удалить"))
+        XCTAssertEqual(model.token, "synthetic-current")
+        XCTAssertEqual(keychain.value, "synthetic-current")
+        XCTAssertNil(legacy.value)
+
+        keychain.failDelete = false
+        model.deleteToken()
+        XCTAssertTrue(model.status.contains("Токен удалён"))
+        XCTAssertEqual(model.token, "")
+        XCTAssertNil(keychain.value)
+        XCTAssertNil(legacy.value)
     }
 }

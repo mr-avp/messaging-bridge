@@ -52,8 +52,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private var offset = 0
     private var didAutoStart = false
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) {
+    private let secrets: TokenStorage
+    init(defaults: UserDefaults = .standard, secrets: TokenStorage = Secrets.storage) {
         self.defaults = defaults
+        self.secrets = secrets
         max.onMessage = { [weak self] data in
             self?.receive(data)
         }
@@ -185,7 +187,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             guard me["can_read_all_group_messages"] as? Bool == true else {
                 status = "В BotFather отключите Group Privacy для этого бота, затем удалите и заново добавьте его в группу Telegram."; return
             }
-            try Secrets.save(value)
+            try secrets.save(value)
             telegram = api
             token = ""
             status = "Бот подключён. Добавьте его в группу Telegram и отправьте там /family, затем нажмите «Найти группу»."
@@ -199,25 +201,39 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         }
     }
     func restoreToken() {
-        let saved = Secrets.read()
-        token = saved
-        if saved.isEmpty {
-            status = "Токен не найден в локальном хранилище. Вставьте токен и нажмите «Подключить бота»."
+        do {
+            token = try secrets.readChecked() ?? ""
+            if token.isEmpty {
+                status = "Токен не найден в локальном хранилище. Вставьте токен и нажмите «Подключить бота»."
+            }
+        } catch {
+            status = Self.tokenReadError
         }
     }
+
     func deleteToken() {
         guard !running, !busy else { return }
-        let deleted = (try? Secrets.deleteChecked()) != nil
-        telegram = nil
-        token = ""
-        status = deleted
-            ? "Токен удалён из локального хранилища. Вставьте новый токен и нажмите «Подключить бота»."
-            : "Не удалось полностью удалить сохранённый токен. Проверьте доступ к Связке ключей macOS и повторите удаление."
+        do {
+            try secrets.delete()
+            telegram = nil
+            token = ""
+            status = "Токен удалён из локального хранилища. Вставьте новый токен и нажмите «Подключить бота»."
+        } catch {
+            status = "Не удалось полностью удалить сохранённый токен. Проверьте доступ к Связке ключей macOS и повторите удаление."
+        }
     }
+
+    private static let tokenReadError = "Не удалось прочитать сохранённый токен. Проверьте доступ к Связке ключей macOS."
+
     func restoreAndConnect() async {
-        let saved = Secrets.read()
-        guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
-        token = saved
+        guard telegram == nil, !running, !busy else { return }
+        do {
+            guard let saved = try secrets.readChecked() else { return }
+            token = saved
+        } catch {
+            status = Self.tokenReadError
+            return
+        }
         await connectTelegram()
         if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles(); autoStartIfNeeded() }
     }
@@ -531,7 +547,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     func copyDiagnostics() {
         let text = """
         Статус: \(status)
-        Бот: \(telegram == nil ? "не подключён" : "подключён"), токен сохранён: \(Secrets.read().isEmpty ? "нет" : "есть")
+        Бот: \(telegram == nil ? "не подключён" : "подключён"), токен сохранён: \((try? secrets.readChecked().map { _ in "есть" } ?? "нет") ?? "ошибка чтения")
         MAX: \(maxReady ? "подключён" : "нет"), событий: \(maxEvents), ready: \(readyCount), групп: \(maxGroups.count)
         Выбрано: MAX \(maxGroups.first(where: { $0.id == maxID })?.title ?? "—"), TG \(tgGroups.first(where: { $0.id == tgID })?.title ?? "—")
         JS: старт \(jsStart), сокет \(jsSocket), авторизация \(jsAuth)
