@@ -492,7 +492,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             queue.removeAll(); seen.removeAll(); runID = UUID()
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
-            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото и видео."
+            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото, видео, GIF и документы."
             poll = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -509,28 +509,54 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                             let caption = (m["caption"] as? String) ?? ""
                             let content = text.isEmpty ? caption : text
                             guard content != "/family", !content.hasPrefix("/family@") else { continue }
-                            let photoID = (m["photo"] as? [[String: Any]])?.last?["file_id"] as? String
-                            let videoID = (m["video"] as? [String: Any])?["file_id"] as? String
-                            let document = m["document"] as? [String: Any]
-                            let documentID = document?["file_id"] as? String
-                            let documentName = document?["file_name"] as? String
+                            let media = TelegramIncomingMedia.parse(m)
                             let sender = m["from"] as? [String: Any] ?? [:]
                             guard RelayPolicy.accept(chat: id.stringValue, allowed: self.tgID, text: content,
                                                      bot: sender["is_bot"] as? Bool ?? false,
-                                                     hasMedia: photoID != nil || videoID != nil || documentID != nil) else { continue }
-                            let rendered = RelayPolicy.render(author: Self.telegramName(sender), text: content)
-                            guard rendered.utf16.count <= 4000 else { self.recoveryBlocked = true; self.stop("Слишком длинное сообщение. Мост остановлен; передайте его вручную.", manual: false); return }
-                            if let fileID = photoID {
-                                let data = try await api.downloadFile(fileID: fileID)
-                                try await self.max.sendMedia(chat: self.maxID, kind: .photo, data: data, text: rendered, fileName: "photo.jpg")
-                            } else if let fileID = videoID {
-                                let data = try await api.downloadFile(fileID: fileID)
-                                try await self.max.sendMedia(chat: self.maxID, kind: .video, data: data, text: rendered, fileName: "video.mp4")
-                            } else if let fileID = documentID {
-                                let data = try await api.downloadFile(fileID: fileID)
-                                try await self.max.sendMedia(chat: self.maxID, kind: .file, data: data, text: rendered, fileName: documentName ?? "document")
+                                                     hasMedia: media != nil) else { continue }
+                            let renderedParts = RelayPolicy.plainParts(
+                                author: Self.telegramName(sender),
+                                text: content,
+                                limit: media == nil ? TelegramLimits.messageUnits : TelegramLimits.captionUnits
+                            )
+                            let rendered = renderedParts.first ?? ""
+                            if let media {
+                                if let size = media.byteCount, !TelegramLimits.canDownload(byteCount: size) {
+                                    self.status = "Вложение Telegram больше 20 МБ не скачано (ограничение Bot API). Передайте его вручную."
+                                    if !content.isEmpty {
+                                        for part in renderedParts { try await self.max.send(chat: self.maxID, text: part) }
+                                        self.count += 1
+                                    }
+                                    continue
+                                }
+                                do {
+                                    let data = try await api.downloadFile(fileID: media.fileID)
+                                    try await self.max.sendMedia(
+                                        chat: self.maxID,
+                                        kind: media.maxKind,
+                                        data: data,
+                                        text: rendered,
+                                        fileName: media.fileName,
+                                        mime: media.mimeType
+                                    )
+                                    for part in renderedParts.dropFirst() {
+                                        try await self.max.send(chat: self.maxID, text: part)
+                                    }
+                                } catch {
+                                    if TelegramLimits.isTooBigDownload(error) {
+                                        self.status = "Вложение Telegram больше 20 МБ не скачано (ограничение Bot API). Передайте его вручную."
+                                        if !content.isEmpty {
+                                            for part in renderedParts { try await self.max.send(chat: self.maxID, text: part) }
+                                            self.count += 1
+                                        }
+                                        continue
+                                    }
+                                    throw error
+                                }
                             } else {
-                                try await self.max.send(chat: self.maxID, text: rendered)
+                                for part in renderedParts {
+                                    try await self.max.send(chat: self.maxID, text: part)
+                                }
                             }
                             self.count += 1
                             try await Task.sleep(for: .milliseconds(350))
@@ -554,28 +580,63 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                     while !Task.isCancelled && self.running && self.runID == current {
                         if !self.queue.isEmpty {
                             let message = self.queue.removeFirst()
-                            let caption = RelayPolicy.renderTelegram(author: message.sender, text: message.text)
+                            let parts = RelayPolicy.telegramParts(
+                                author: message.sender,
+                                text: message.text,
+                                limit: message.media.isEmpty ? TelegramLimits.messageUnits : TelegramLimits.captionUnits
+                            )
                             if message.media.isEmpty {
-                                try await api.send(chat: self.tgID, text: caption)
+                                for part in parts {
+                                    try await api.send(chat: self.tgID, text: part)
+                                }
                             } else {
+                                var captionSent = false
                                 for (index, media) in message.media.enumerated() {
-                                    let label = index == 0 ? caption : ""
+                                    let label = index == 0 ? (parts.first ?? "") : ""
                                     do {
-                                        if media.kind == .file {
+                                        let kind = MediaInfo.telegramKind(
+                                            for: media.kind,
+                                            url: media.url,
+                                            name: media.name,
+                                            mime: media.mime
+                                        )
+                                        switch kind {
+                                        case .photo, .video:
+                                            try await api.sendMedia(chat: self.tgID, kind: kind, url: media.url, caption: label)
+                                        case .animation:
+                                            if media.kind == .file {
+                                                let data = try await self.downloadData(from: media.url)
+                                                guard TelegramLimits.canSend(kind: .animation, byteCount: data.count) else { throw RelayError.api }
+                                                try await api.sendAnimation(
+                                                    chat: self.tgID,
+                                                    data: data,
+                                                    fileName: media.name ?? "animation.gif",
+                                                    mimeType: media.mime ?? MediaInfo.mimeType(fileName: media.name ?? "animation.gif"),
+                                                    caption: label
+                                                )
+                                            } else {
+                                                try await api.sendMedia(chat: self.tgID, kind: .animation, url: media.url, caption: label)
+                                            }
+                                        case .document:
                                             let data = try await self.downloadData(from: media.url)
-                                            try await api.sendDocument(chat: self.tgID, data: data, fileName: media.name ?? "document", caption: label)
-                                        } else {
-                                            let tgKind: TelegramMediaKind = (media.kind == .photo) ? .photo : .video
-                                            try await api.sendMedia(chat: self.tgID, kind: tgKind, url: media.url, caption: label)
+                                            guard TelegramLimits.canSend(kind: .document, byteCount: data.count) else { throw RelayError.api }
+                                            let name = media.name ?? "document"
+                                            try await api.sendDocument(
+                                                chat: self.tgID,
+                                                data: data,
+                                                fileName: name,
+                                                mimeType: media.mime ?? MediaInfo.mimeType(fileName: name),
+                                                caption: label
+                                            )
                                         }
+                                        if index == 0 { captionSent = true }
                                     } catch {
-                                        let fallback = label.isEmpty ? media.url : "\(caption)\n\(media.url)"
-                                        try await api.send(chat: self.tgID, text: String(fallback.prefix(4000)))
+                                        try await api.send(chat: self.tgID, text: RelayPolicy.htmlEscape(media.url))
                                     }
                                 }
-                                if caption.utf16.count > 1024 {
-                                    let extra = String(caption.dropFirst(1024))
-                                    try await api.send(chat: self.tgID, text: String(extra.prefix(4000)))
+                                let extra = captionSent ? Array(parts.dropFirst()) : parts
+                                for part in extra {
+                                    try await api.send(chat: self.tgID, text: part)
                                 }
                             }
                             self.count += 1
