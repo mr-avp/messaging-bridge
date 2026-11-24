@@ -14,6 +14,7 @@ enum RelayMediaKind: String { case photo, video, file }
 struct RelayMedia { let kind: RelayMediaKind; let url: String; let name: String? }
 struct RelayMessage { let id: String; let chat: String; let sender: String; let text: String; let media: [RelayMedia] }
 @MainActor final class Model: ObservableObject {
+    static let shared = Model()
     @Published var token = ""
     @Published var maxGroups: [Group] = []
     @Published var tgGroups: [Group] = []
@@ -38,6 +39,8 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var jsTextLen = 0
     @Published var jsVisibility = ""
     @Published var count = 0
+    @Published var autoStart = false
+    @Published var autoRelay = false
     let max = MaxWeb()
     private var telegram: Telegram?
     private let downloadSession = URLSession(configuration: .ephemeral)
@@ -47,11 +50,15 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     private var seen = Set<String>()
     private var runID = UUID()
     private var offset = 0
-    init() {
+    private var didAutoStart = false
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         max.onMessage = { [weak self] data in
             self?.receive(data)
         }
         loadConnections()
+        loadSettings()
     }
     func openMAX() { max.load() }
     func receive(_ data: [String: Any]) {
@@ -66,6 +73,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             status = raw.isEmpty
                 ? "MAX подключён, но список групп пуст. Откройте нужный чат в MAX справа и нажмите «Обновить группы»."
                 : "MAX подключён. Выберите группу-источник и оставьте её открытой справа."
+            autoStartIfNeeded()
         case "groups":
             maxEvents += 1
             apply(groups: data["groups"] as? [[String: Any]] ?? [])
@@ -207,7 +215,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard !saved.isEmpty, telegram == nil, !running, !busy else { return }
         token = saved
         await connectTelegram()
-        if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles() }
+        if telegram != nil { status = "Бот подключён автоматически из локального хранилища. \(status)"; await refreshSavedGroupTitles(); autoStartIfNeeded() }
     }
     func discover() async {
         guard !running, !busy, let api = telegram else { return }
@@ -252,6 +260,56 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard status == 200 else { throw RelayError.api }
         return data
+    }
+    private func loadSettings() {
+        autoStart = defaults.bool(forKey: "messaging-bridge.auto-start")
+        autoRelay = defaults.bool(forKey: "messaging-bridge.auto-relay")
+    }
+    func setAutoStart(
+        _ enabled: Bool,
+        launchAgentURL url: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/local.messaging-bridge.plist"),
+        executablePath: String? = Bundle.main.executablePath
+    ) {
+        do {
+            if enabled {
+                guard let executablePath, !executablePath.isEmpty else {
+                    status = "Не удалось изменить автозапуск: путь к приложению пуст."
+                    return
+                }
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let plist: [String: Any] = [
+                    "Label": "local.messaging-bridge",
+                    "ProgramArguments": [executablePath],
+                    "RunAtLoad": true,
+                    "KeepAlive": false
+                ]
+                try (plist as NSDictionary).write(to: url)
+            } else {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch CocoaError.fileNoSuchFile {
+                    // The agent is already absent.
+                }
+            }
+            defaults.set(enabled, forKey: "messaging-bridge.auto-start")
+            autoStart = enabled
+        } catch {
+            status = "Не удалось изменить автозапуск: \(error.localizedDescription)"
+        }
+    }
+    func setAutoRelay(_ enabled: Bool) {
+        autoRelay = enabled
+        defaults.set(enabled, forKey: "messaging-bridge.auto-relay")
+        if enabled { autoStartIfNeeded() }
+    }
+    func applyStartupSettings() {
+        autoStartIfNeeded()
+    }
+    func autoStartIfNeeded() {
+        guard autoRelay, !didAutoStart, !running, !busy, canStart else { return }
+        didAutoStart = true
+        Task { await start() }
     }
     var hasTelegram: Bool { telegram != nil }
     func refreshSavedGroupTitles() async {
@@ -332,11 +390,10 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     }
     private func persistConnections() {
         if let data = try? JSONEncoder().encode(connections) {
-            UserDefaults.standard.set(data, forKey: "messaging-bridge.connections")
+            defaults.set(data, forKey: "messaging-bridge.connections")
         }
     }
     private func loadConnections() {
-        let defaults = UserDefaults.standard
         let isTest = NSClassFromString("XCTest") != nil
         let legacyDefaults = isTest ? nil : UserDefaults(suiteName: "local.family-relay")
         let oldPlist = NSHomeDirectory() + "/Library/Preferences/local.family-relay.plist"

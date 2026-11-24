@@ -1,9 +1,37 @@
 import SwiftUI
 import AppKit
 
+func loadTrayIcon(from bundle: Bundle = .main) -> NSImage? {
+    let image = bundle.url(forResource: "TrayIcon", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+        ?? Bundle.module.image(forResource: "TrayIcon")
+    image?.isTemplate = false
+    return image
+}
+
+private let trayIcon = loadTrayIcon()
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var closeObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showWindow() }
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow, window.title.contains("Мост сообщений") else { return }
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.deactivate()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showWindow()
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    deinit {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func showWindow() {
@@ -19,24 +47,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func toggleWindow() {
+    func hideWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
-        if window.isVisible {
-            window.orderOut(nil)
-            NSApp.setActivationPolicy(.accessory)
-        } else {
-            NSApp.setActivationPolicy(.regular)
-            showWindow()
+        window.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+        NSApp.deactivate()
+    }
+}
+
+private struct MenuBarContentView: View {
+    let onHide: () -> Void
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Показать / скрыть окно") {
+            if let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }), window.isVisible {
+                onHide()
+            } else {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
         }
+        Divider()
+        Button("Выйти") { NSApp.terminate(nil) }
     }
 }
 
 @main struct MessagingBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = Model()
+    @ObservedObject private var model = Model.shared
     var body: some Scene {
-        WindowGroup("Мост сообщений (Messaging Bridge)") {
+        WindowGroup("Мост сообщений (Messaging Bridge)", id: "main") {
             HSplitView {
+                ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Мост сообщений").font(.largeTitle.bold())
                     Text("Messaging Bridge · Connecting people").foregroundStyle(.secondary)
@@ -84,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Text("Один бот может работать в нескольких Telegram-группах. Мост переносит выбранную пару групп; для другой пары остановите мост и выберите сохранённое подключение.")
                         .font(.caption).foregroundStyle(.secondary)
                     Divider()
+                    Toggle("Автозапуск при входе в систему", isOn: Binding(get: { model.autoStart }, set: { model.setAutoStart($0) }))
+                    Toggle("Автовключение моста при запуске", isOn: Binding(get: { model.autoRelay }, set: { model.setAutoRelay($0) }))
+                    Divider()
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                     Text("Перенесено: \(model.count)").monospacedDigit()
                     HStack {
@@ -93,17 +142,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Spacer()
                     Text("Только новые сообщения: текст, фото и видео, без истории и правок. Имена берутся из MAX и Telegram. Оставляйте приложение открытым. MAX использует отдельную веб-сессию; токен бота хранится в локальном хранилище приложения. Тексты сообщений не пишутся в логи.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }.padding(20).frame(minWidth: 380)
+                }
+                .padding(20)
+                .frame(minWidth: 380)
+                }
                 MaxPanel(web: model.max).frame(minWidth: 420, minHeight: 500)
             }.frame(minWidth: 900, minHeight: 600)
-            .task { await model.restoreAndConnect() }
+            .task { await model.restoreAndConnect(); model.applyStartupSettings() }
         }
         MenuBarExtra {
-            Button("Показать / скрыть окно") { appDelegate.toggleWindow() }
-            Divider()
-            Button("Выйти") { NSApp.terminate(nil) }
+            MenuBarContentView(onHide: { appDelegate.hideWindow() })
         } label: {
-            Image("TrayIcon").renderingMode(.original)
+            if let trayIcon {
+                Image(nsImage: trayIcon)
+            } else {
+                Image(systemName: "arrow.left.arrow.right")
+            }
         }
     }
 }

@@ -2,6 +2,20 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('node:assert/strict');
 const source = fs.readFileSync(__dirname + '/../Sources/MessagingBridge/MaxWeb.swift', 'utf8').split('static let script = #"""')[1].split('"""#')[0];
+const resource = fs.readFileSync(__dirname + '/../Sources/MessagingBridge/Resources/relay.js', 'utf8');
+// Windows WebView2 and macOS WebKit use different host postMessage adapters.
+const swiftPost = 'const post = x => { try { window.webkit.messageHandlers.relay.postMessage(x); } catch (_) {} };';
+const resourcePost = `const emitToHost = x => {
+        if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+          window.chrome.webview.postMessage(x);
+        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.relay) {
+          window.webkit.messageHandlers.relay.postMessage(x);
+        }
+      };
+      const post = x => { try { emitToHost(x); } catch (_) {} };`;
+assert.ok(source.includes(swiftPost), 'Expected the Swift WebKit adapter');
+assert.ok(resource.includes(resourcePost), 'Expected both resource host adapters');
+assert.equal(resource.replace(resourcePost, swiftPost).trim(), source.trim(), 'Relay logic must match outside the host adapter');
 const received = [];
 const relayReceived = () => received.filter(x => x.kind !== 'debug');
 class WS {
