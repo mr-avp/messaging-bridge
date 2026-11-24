@@ -18,4 +18,50 @@ struct RelayPolicy {
     static func renderTelegram(author: String, text: String) -> String {
         "<b>\(htmlEscape(author))</b>:\n\(htmlEscape(text))"
     }
+
+    /// Telegram applies limits after entities are parsed. Count visible text,
+    /// not the markup and entity escapes produced by `htmlEscape`.
+    static func visibleUTF16Count(_ html: String) -> Int {
+        var text = html
+            .replacingOccurrences(of: "<b>", with: "")
+            .replacingOccurrences(of: "</b>", with: "")
+        text = text
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        return text.utf16.count
+    }
+
+    /// Split a message into Telegram-sized HTML parts. Splitting happens on
+    /// grapheme clusters, so ZWJ emoji, skin-tone modifiers and flags are never
+    /// cut in half, and HTML escaping is applied after the split. The limit is
+    /// measured in UTF-16 units because that is how Telegram counts text.
+    static func telegramParts(author: String, text: String, limit: Int) -> [String] {
+        let safeLimit = max(1, limit)
+        var authorText = author
+        if authorText.utf16.count + 2 >= safeLimit {
+            authorText = String(authorText.prefix(max(1, safeLimit / 2)))
+        }
+        let prefix = "<b>\(htmlEscape(authorText))</b>:\n"
+        let firstBudget = max(1, safeLimit - (authorText.utf16.count + 2))
+        var parts: [String] = []
+        var body = ""
+        var units = 0
+        var budget = firstBudget
+        func flush() {
+            let html = (parts.isEmpty ? prefix : "") + htmlEscape(body)
+            parts.append(html)
+            body = ""
+            units = 0
+            budget = safeLimit
+        }
+        for character in text {
+            let width = String(character).utf16.count
+            if units > 0 && units + width > budget { flush() }
+            body.append(character)
+            units += width
+        }
+        if !body.isEmpty || parts.isEmpty { flush() }
+        return parts
+    }
 }
