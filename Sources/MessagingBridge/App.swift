@@ -61,6 +61,7 @@ private struct MenuBarContentView: View {
             if let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }), window.isVisible {
                 onHide()
             } else {
+                NSApp.setActivationPolicy(.regular)
                 openWindow(id: "main")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     NSApp.setActivationPolicy(.accessory)
