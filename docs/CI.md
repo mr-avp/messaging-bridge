@@ -1,8 +1,8 @@
 # CI моста сообщений
 
 Workflow [Bridge CI](../.github/workflows/ci.yml) запускается на push в
-`main` и на pull request. Он использует образ GitHub Actions `macos-15`
-(arm64), Xcode 16.4 и Node.js 24.22.3 (LTS). Версии Xcode и Node.js указаны
+`main` и на pull request. Он использует образ GitHub Actions `macos-15-intel`
+(Intel, x64), Xcode 16.4 и Node.js 24.22.3 (LTS). Версии Xcode и Node.js указаны
 в workflow, а версии инструментов выводятся в журнал. Сам образ macOS
 обновляется GitHub. Workflow запрашивает разрешение `contents: read`.
 
