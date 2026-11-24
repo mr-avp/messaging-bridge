@@ -9,8 +9,26 @@ private let trayIcon: NSImage = {
 }()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var closeObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showWindow() }
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow, window.title.contains("Мост сообщений") else { return }
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.deactivate()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showWindow()
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    deinit {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func showWindow() {
@@ -30,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
         window.orderOut(nil)
         NSApp.setActivationPolicy(.accessory)
+        NSApp.deactivate()
     }
 }
 
@@ -42,8 +61,10 @@ private struct MenuBarContentView: View {
             if let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }), window.isVisible {
                 onHide()
             } else {
-                NSApp.setActivationPolicy(.regular)
                 openWindow(id: "main")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
             }
         }
         Divider()
