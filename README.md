@@ -1,6 +1,6 @@
 # Мост сообщений (Messaging Bridge) — локальный прототип на Swift
 
-Слоган: Connecting people.
+Connecting people.
 
 ## О проекте
 
