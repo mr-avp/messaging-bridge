@@ -26,15 +26,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func toggleWindow() {
+    func hideWindow() {
         guard let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }) else { return }
-        if window.isVisible {
-            window.orderOut(nil)
-            NSApp.setActivationPolicy(.accessory)
-        } else {
-            NSApp.setActivationPolicy(.regular)
-            showWindow()
+        window.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
+}
+
+private struct MenuBarContentView: View {
+    let onHide: () -> Void
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Показать / скрыть окно") {
+            if let window = NSApp.windows.first(where: { $0.title.contains("Мост сообщений") }), window.isVisible {
+                onHide()
+            } else {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main")
+            }
         }
+        Divider()
+        Button("Выйти") { NSApp.terminate(nil) }
     }
 }
 
@@ -42,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var model = Model.shared
     var body: some Scene {
-        WindowGroup("Мост сообщений (Messaging Bridge)") {
+        WindowGroup("Мост сообщений (Messaging Bridge)", id: "main") {
             HSplitView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Мост сообщений").font(.largeTitle.bold())
@@ -109,9 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .task { await model.restoreAndConnect(); model.applyStartupSettings() }
         }
         MenuBarExtra {
-            Button("Показать / скрыть окно") { appDelegate.toggleWindow() }
-            Divider()
-            Button("Выйти") { NSApp.terminate(nil) }
+            MenuBarContentView(onHide: { appDelegate.hideWindow() })
         } label: {
             Image(nsImage: trayIcon)
         }
