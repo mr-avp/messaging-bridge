@@ -20,7 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The single settings window. It is created on demand and reused; closing it only hides it.
     private(set) var settingsWindow: NSWindow?
     /// Production hosts the SwiftUI settings view; tests inject a plain view to avoid touching app state.
-    var makeSettingsContent: () -> NSView = { NSHostingView(rootView: MainWindowView()) }
+    var makeSettingsContent: (() -> NSView)?
+    /// Keeps the NSWindow size in sync with the MAX panel. Owned here so the
+    /// expanded width survives window recreation.
+    let windowSizer = SettingsWindowSizer()
+    /// Mirror of `Model.maxPanelVisible` used for window geometry.
+    private(set) var isMaxPanelVisible = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -77,9 +82,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Single entry point for the "Скрыть/Показать MAX" action. The delegate is
+    /// passed explicitly to the SwiftUI view, so this never relies on
+    /// `NSApp.delegate` (which points at the SwiftUI adaptor, not `AppDelegate`).
+    @MainActor
+    func setMaxPanelVisible(_ visible: Bool) {
+        isMaxPanelVisible = visible
+        // Capture the expanded width and resize BEFORE the model change reaches
+        // SwiftUI: when SwiftUI collapses its min width it shrinks the window
+        // immediately, which would otherwise overwrite the remembered size.
+        if let window = settingsWindow {
+            windowSizer.apply(panelVisible: visible, to: window)
+        }
+        Model.shared.maxPanelVisible = visible
+        guard let window = settingsWindow else { return }
+
+        // SwiftUI rebuilds its content (and min width) on the next runloop turn.
+        // Re-apply afterwards so the NSWindow cannot be held at the old minimum.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.settingsWindow === window,
+                  self.isMaxPanelVisible == visible else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            self.windowSizer.apply(panelVisible: visible, to: window)
+        }
+    }
+
+    private func makeSettingsContentView() -> NSView {
+        if let makeSettingsContent { return makeSettingsContent() }
+        return NSHostingView(rootView: MainWindowView(appDelegate: self))
+    }
+
     private func makeSettingsWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: windowSizer.initialContentWidth(panelVisible: isMaxPanelVisible),
+                height: SettingsWindowMetrics.defaultContentHeight
+            ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -87,20 +127,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.title = settingsWindowTitle
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.minSize = NSSize(width: 900, height: 600)
-        window.contentView = makeSettingsContent()
+        // SwiftUI's `.frame(minWidth:)` and the NSWindow minimum must agree.
+        windowSizer.setMinimumSize(panelVisible: isMaxPanelVisible, for: window)
+        window.contentView = makeSettingsContentView()
         let restored = window.setFrameUsingName(settingsWindowFrameName)
         window.setFrameAutosaveName(settingsWindowFrameName)
         if !restored { window.center() }
         settingsWindow = window
+        // Enforce the expanded/hidden width and restore the remembered expanded
+        // width if the autosaved frame was captured while MAX was hidden.
+        windowSizer.apply(panelVisible: isMaxPanelVisible, to: window)
         return window
     }
 
     private func positionOnVisibleScreen(_ window: NSWindow) {
         guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let minWidth = SettingsWindowMetrics.minContentWidth(maxPanelVisible: isMaxPanelVisible)
         var frame = window.frame
-        frame.size.width = min(frame.width, visible.width)
-        frame.size.height = min(frame.height, visible.height)
+        frame.size.width = max(min(frame.width, visible.width), minWidth)
+        frame.size.height = min(frame.size.height, visible.height)
         frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
         frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
         if frame != window.frame { window.setFrame(frame, display: false) }
@@ -154,6 +199,9 @@ private struct MenuBarContentView: View {
 }
 
 private struct MainWindowView: View {
+    /// Passed explicitly by `AppDelegate`; `NSApp.delegate` is the SwiftUI
+    /// adaptor and must not be used for window control.
+    let appDelegate: AppDelegate
     @ObservedObject private var model = Model.shared
     @ObservedObject private var eventLog = Model.shared.eventLog
 
@@ -171,7 +219,7 @@ private struct MainWindowView: View {
     }
 
     var body: some View {
-        HSplitView {
+        SettingsWindowContent(isMaxPanelVisible: model.maxPanelVisible) {
             VStack(alignment: .leading, spacing: 0) {
                 // A single top navigation row: the TabView tabs below are the
                 // only section switcher (a segmented Picker here duplicated it).
@@ -187,13 +235,9 @@ private struct MainWindowView: View {
                         .tag(AppSection.information)
                 }
             }
-            .frame(minWidth: 400)
+        } panel: {
             MaxPanel(web: model.max)
-                .frame(minWidth: model.maxPanelVisible ? 420 : 0, maxWidth: model.maxPanelVisible ? .infinity : 0, minHeight: 500)
-                .opacity(model.maxPanelVisible ? 1 : 0)
-                .clipped()
         }
-        .frame(minWidth: 900, minHeight: 600)
     }
 
 
@@ -239,7 +283,7 @@ private struct MainWindowView: View {
                         model.settingsPane = .connections
                     }
                     Button(model.maxPanelVisible ? "Скрыть MAX" : "Показать MAX") {
-                        model.maxPanelVisible.toggle()
+                        appDelegate.setMaxPanelVisible(!model.maxPanelVisible)
                     }
                 }
 
@@ -285,6 +329,9 @@ private struct MainWindowView: View {
                 Button("Открыть / перезагрузить MAX") { model.openMAX() }.disabled(model.running || model.busy)
                 Button("Обновить группы") { Task { await model.refreshGroups() } }.disabled(!model.maxReady || model.running || model.busy)
             }
+            Button("Открыть сохранённую группу MAX") { model.openSavedMaxGroup() }.disabled(model.savedMaxID == nil || model.running)
+            Text("Открытие чата может отметить сообщения прочитанными и сменить активный чат в веб-клиенте MAX.")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("Группа MAX", selection: $model.maxID) {
                 Text("Выберите группу").tag("")
                 ForEach(model.maxGroups) { Text($0.title).tag($0.id) }
@@ -320,6 +367,9 @@ private struct MainWindowView: View {
             Toggle("Автозапуск при входе в систему", isOn: Binding(get: { model.autoStart }, set: { model.setAutoStart($0) }))
             Toggle("Автовключение моста при запуске", isOn: Binding(get: { model.autoRelay }, set: { model.setAutoRelay($0) }))
             Toggle("Автовосстановление после сна и сбоев", isOn: Binding(get: { model.autoRecover }, set: { model.setAutoRecover($0) }))
+            Toggle("Автоматически открывать выбранную группу MAX", isOn: Binding(get: { model.autoOpenChat }, set: { model.setAutoOpenChat($0) }))
+            Text("При включении MAX открывает сохранённую группу при запуске, перезагрузке, выходе из сна и восстановлении. Отключение возвращает открытие на главную страницу. Внимание: открытие чата может отметить сообщения прочитанными и сменить активный чат в веб-клиенте MAX; ID берётся только из выбранного сохранённого подключения.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
