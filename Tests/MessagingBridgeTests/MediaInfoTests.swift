@@ -99,6 +99,81 @@ final class MediaInfoTests: XCTestCase {
 
         XCTAssertNil(TelegramIncomingMedia.parse(["text": "no media"]))
     }
+
+    // MARK: - Voice / video-note regression (reported silent drop)
+
+    func testIncomingVoiceIsParsedWithOpusOggMetadata() throws {
+        let media = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "voice": [
+                "file_id": "VOICE-1",
+                "file_size": 4096,
+                "mime_type": "audio/ogg",
+                "duration": 7
+            ]
+        ]), "a Telegram voice recording with no caption must not be dropped")
+        XCTAssertEqual(media.fileID, "VOICE-1")
+        XCTAssertEqual(media.fileName, "voice.ogg", "voice has no file_name; the fallback must be a playable .ogg")
+        XCTAssertEqual(media.mimeType, "audio/ogg")
+        XCTAssertEqual(media.byteCount, 4096)
+        XCTAssertEqual(media.maxKind.rawValue, "file", "MAX has no verified native voice attach; use the FILE fallback")
+    }
+
+    func testIncomingVoiceWithoutMimeFallsBackToOgg() throws {
+        let media = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "voice": ["file_id": "VOICE-2"]
+        ]))
+        XCTAssertEqual(media.fileName, "voice.ogg")
+        XCTAssertEqual(media.mimeType, "audio/ogg")
+        XCTAssertEqual(media.maxKind.rawValue, "file")
+    }
+
+    func testIncomingVideoNoteIsParsedWithMP4Metadata() throws {
+        let media = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "video_note": [
+                "file_id": "VIDEONOTE-1",
+                "file_size": 8192,
+                "duration": 12,
+                "length": 240
+            ]
+        ]), "a Telegram round video note with no caption must not be dropped")
+        XCTAssertEqual(media.fileID, "VIDEONOTE-1")
+        XCTAssertEqual(media.fileName, "video_note.mp4")
+        XCTAssertEqual(media.mimeType, "video/mp4")
+        XCTAssertEqual(media.byteCount, 8192)
+        XCTAssertEqual(media.maxKind.rawValue, "video", "fall back to an ordinary MAX video, not a native circle")
+    }
+
+    func testIncomingVideoNoteWinsOverDocument() throws {
+        let media = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "video_note": ["file_id": "VIDEONOTE-2"],
+            "document": ["file_id": "DOC"]
+        ]))
+        XCTAssertEqual(media.fileID, "VIDEONOTE-2")
+        XCTAssertEqual(media.fileName, "video_note.mp4")
+    }
+
+    func testIncomingVoiceWinsOverDocument() throws {
+        let media = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "voice": ["file_id": "VOICE-3"],
+            "document": ["file_id": "DOC"]
+        ]))
+        XCTAssertEqual(media.fileID, "VOICE-3")
+        XCTAssertEqual(media.fileName, "voice.ogg")
+    }
+
+    func testVoiceAndVideoNoteUseTheSharedGetFileDownloadLimit() throws {
+        // The Bot API getFile limit applies to every media kind. The parsed
+        // file_size is what the model checks before downloading; the end-to-end
+        // skip behaviour is covered by the model send-seam regression test.
+        let voice = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "voice": ["file_id": "V", "file_size": 20 * 1024 * 1024 + 1]
+        ]))
+        let note = try XCTUnwrap(TelegramIncomingMedia.parse([
+            "video_note": ["file_id": "N", "file_size": 20 * 1024 * 1024 + 1]
+        ]))
+        XCTAssertFalse(TelegramLimits.canDownload(byteCount: voice.byteCount ?? 0))
+        XCTAssertFalse(TelegramLimits.canDownload(byteCount: note.byteCount ?? 0))
+    }
 }
 
 final class EmojiTextTests: XCTestCase {

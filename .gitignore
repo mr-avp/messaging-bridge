@@ -1,3 +1,5 @@
 .build/
+.build-arch-*/
 dist/
+release-preview/
 .DS_Store

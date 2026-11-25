@@ -364,6 +364,14 @@
         if (!attach || typeof attach !== 'object') return null;
         const type = asString(attach._type);
         const gifHint = attach.isGif === true || attach.isGIF === true || attach.gif === true || attach.animated === true;
+        // Public MAX protocol documents describe AUDIO attaches, but this relay
+        // has no verified web-client URL resolution or native voice semantics.
+        // Report the unsupported attach in diagnostics instead of dropping it
+        // silently; do not guess an opcode, type or mapping.
+        if (type === 'AUDIO') {
+          post({kind:'debug', stage:'media', error:'AUDIO attach not relayed (unsupported)'});
+          return null;
+        }
         if (type === 'PHOTO') {
           const url = urlOf(attach.baseUrl || attach.url || attach.previewUrl);
           return url ? {kind: 'photo', url: url} : null;

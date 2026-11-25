@@ -58,6 +58,8 @@ enum MediaInfo {
         "mp3": "audio/mpeg",
         "m4a": "audio/mp4",
         "ogg": "audio/ogg",
+        "oga": "audio/ogg",
+        "opus": "audio/ogg",
         "wav": "audio/wav",
         "pdf": "application/pdf",
         "zip": "application/zip",
@@ -112,8 +114,11 @@ enum MediaInfo {
 
 /// Media fields extracted from a Telegram `message` update. `animation` is
 /// checked before `document` because Telegram puts both objects in a GIF update.
+/// Voice recordings and round video notes have their own Bot API fields; both
+/// are checked before `document` so a voice/video-note update can never be
+/// misread as an ordinary document or silently skipped.
 struct TelegramIncomingMedia {
-    enum Kind { case photo, animation, video, document }
+    enum Kind { case photo, animation, video, voice, videoNote, document }
 
     let kind: Kind
     let fileID: String
@@ -128,6 +133,12 @@ struct TelegramIncomingMedia {
             return mimeType.lowercased().contains("gif") ? .file : .video
         case .video:
             return mimeType.lowercased().contains("gif") ? .file : .video
+        // MAX's native voice/circle attach semantics are not verified for the
+        // web client, so the playable bytes are relayed through the proven FILE
+        // (Opus/Ogg) and ordinary VIDEO (MP4) upload paths. This is a deliberate
+        // fallback: it does not claim a native voice bubble or a round circle.
+        case .voice: return .file
+        case .videoNote: return .video
         case .document: return .file
         }
     }
@@ -142,6 +153,19 @@ struct TelegramIncomingMedia {
            let id = video["file_id"] as? String, !id.isEmpty {
             return make(kind: .video, object: video,
                         fallbackName: "video.mp4", fallbackMime: "video/mp4", id: id)
+        }
+        // Telegram voice notes are Opus/Ogg and normally carry no file_name or
+        // mime_type. The fallback name gives the MAX upload a correct MIME hint.
+        if let voice = message["voice"] as? [String: Any],
+           let id = voice["file_id"] as? String, !id.isEmpty {
+            return make(kind: .voice, object: voice,
+                        fallbackName: "voice.ogg", fallbackMime: "audio/ogg", id: id)
+        }
+        // Round video notes are MP4 with no file_name in the Bot API.
+        if let videoNote = message["video_note"] as? [String: Any],
+           let id = videoNote["file_id"] as? String, !id.isEmpty {
+            return make(kind: .videoNote, object: videoNote,
+                        fallbackName: "video_note.mp4", fallbackMime: "video/mp4", id: id)
         }
         if let document = message["document"] as? [String: Any],
            let id = document["file_id"] as? String, !id.isEmpty {
