@@ -174,6 +174,17 @@ const emojiCases = [
   assert.equal(t.mimeOf('report.pdf'), 'application/pdf');
   assert.equal(t.mimeOf('file'), '');
 
+  // 7a. A MAX AUDIO attach must be visible in diagnostics, not silently
+  // dropped. No voice URL resolution or native mapping is guessed here.
+  const mediaDebugBefore = received.filter(x => x.kind === 'debug' && x.stage === 'media').length;
+  const messagesBefore = relayReceived().length;
+  message('-100', '', 2000, {attaches: [{_type: 'AUDIO', audioId: 991, token: 'audio_token'}]})();
+  await tick();
+  const audioDebug = received.filter(x => x.kind === 'debug' && x.stage === 'media');
+  assert.equal(audioDebug.length, mediaDebugBefore + 1, 'AUDIO attach must produce a visible diagnostic');
+  assert.match(audioDebug.at(-1).error, /AUDIO attach not relayed/);
+  assert.equal(relayReceived().length, messagesBefore, 'unsupported AUDIO attach must not be forwarded');
+
   const uploadMedia = async (kind, fileName, mime) => {
     const promise = relay.sendMedia('-100', kind, Buffer.from('bytes').toString('base64'), 'подпись', fileName, mime);
     const opcode = kind === 'photo' ? 80 : kind === 'video' ? 82 : 87;

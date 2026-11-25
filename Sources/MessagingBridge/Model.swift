@@ -612,7 +612,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             queue.removeAll(); seen.removeAll(); runID = UUID(); sessionRelayCount = 0; lastSuccessfulRelayAt = nil
             let current = runID
             let started = Int(Date().timeIntervalSince1970)
-            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся только новые тексты, фото, видео, GIF и документы."
+            running = true; status = "Мост работает. Оставьте выбранный чат MAX открытым справа; переносятся новые тексты, фото, видео, GIF и документы. Из Telegram также: голосовые как файлы, кружочки как обычное видео."
             eventLog.record(.bridgeStart)
             poll = Task { [weak self] in
                 guard let self else { return }

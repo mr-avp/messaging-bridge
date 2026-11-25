@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 private final class MockMaxWeb: MaxWeb {
     private(set) var sentTexts: [String] = []
-    private(set) var sentMedia: [(chat: String, kind: MaxMediaKind, text: String)] = []
+    private(set) var sentMedia: [(chat: String, kind: MaxMediaKind, text: String, fileName: String, mime: String, data: Data)] = []
     private(set) var configureCalls: [(chat: String, enabled: Bool)] = []
     private(set) var loadCount = 0
     var enableDelayMilliseconds: Int = 0
@@ -26,7 +26,7 @@ private final class MockMaxWeb: MaxWeb {
         onSendText?(text)
     }
     override func sendMedia(chat: String, kind: MaxMediaKind, data: Data, text: String, fileName: String, mime: String = "") async throws {
-        sentMedia.append((chat, kind, text))
+        sentMedia.append((chat, kind, text, fileName, mime, data))
         onSendText?(text)
     }
     override func refreshGroups() async throws -> [Group] { [] }
@@ -41,6 +41,9 @@ private final class ScriptedTelegramProtocol: URLProtocol {
     private static var updateOffsets: [Int] = []
     private static var sentMessages: [[String: Any]] = []
     private static var methods: [String] = []
+    private static var fileBytesByID: [String: Data] = [:]
+    private static var getFileIDs: [String] = []
+    private static var downloadedPaths: [String] = []
 
     static func reset() {
         lock.lock(); defer { lock.unlock() }
@@ -48,6 +51,9 @@ private final class ScriptedTelegramProtocol: URLProtocol {
         updateOffsets = []
         sentMessages = []
         methods = []
+        fileBytesByID = [:]
+        getFileIDs = []
+        downloadedPaths = []
     }
 
     static func queue(updates: [[[String: Any]]]) {
@@ -55,9 +61,15 @@ private final class ScriptedTelegramProtocol: URLProtocol {
         updatesQueue = updates
     }
 
-    static func snapshot() -> (methods: [String], offsets: [Int], sent: [[String: Any]]) {
+    /// Bytes served by `getFile` + the download URL, keyed by Telegram file_id.
+    static func queue(files: [String: Data]) {
         lock.lock(); defer { lock.unlock() }
-        return (methods, updateOffsets, sentMessages)
+        for (id, bytes) in files { fileBytesByID[id] = bytes }
+    }
+
+    static func snapshot() -> (methods: [String], offsets: [Int], sent: [[String: Any]], getFileIDs: [String], downloadedPaths: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        return (methods, updateOffsets, sentMessages, getFileIDs, downloadedPaths)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -71,15 +83,31 @@ private final class ScriptedTelegramProtocol: URLProtocol {
         Self.lock.lock()
         Self.methods.append(method)
         var result: Any = [:]
+        var rawDownload: Data? = nil
         if method == "getUpdates" {
             Self.updateOffsets.append(payload["offset"] as? Int ?? Int.min)
             result = Self.updatesQueue.isEmpty ? [] : Self.updatesQueue.removeFirst()
         } else if method == "sendMessage" {
             Self.sentMessages.append(payload)
             result = ["message_id": 1]
+        } else if method == "getFile" {
+            let id = payload["file_id"] as? String ?? ""
+            Self.getFileIDs.append(id)
+            result = ["file_path": "download/\(id)"]
+        } else if request.url?.path.hasPrefix("/file/bot") == true {
+            let id = request.url!.lastPathComponent
+            Self.downloadedPaths.append(id)
+            rawDownload = Self.fileBytesByID[id] ?? Data()
         }
         Self.lock.unlock()
 
+        if let rawDownload {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: rawDownload)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let json = (try? JSONSerialization.data(withJSONObject: ["ok": true, "result": result])) ?? Data()
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -274,6 +302,153 @@ final class BridgeRegressionTests: XCTestCase {
         XCTAssertTrue(snapshot.offsets.contains(44), "offset must advance past consumed updates")
         XCTAssertFalse(snapshot.methods.contains("sendMessage"),
                        "Telegram → MAX must not send back through Telegram")
+        model.stopByUser()
+    }
+
+    // MARK: - Voice / video-note send seam (real start() → getFile → max.sendMedia)
+
+    private func mediaUpdate(id: Int, date: Int, mediaKey: String, media: [String: Any], caption: String? = nil) -> [String: Any] {
+        var message: [String: Any] = [
+            "message_id": id,
+            "date": date,
+            "chat": ["id": NSNumber(value: Int64(-100)), "type": "group", "title": "Family TG"],
+            "from": ["id": 1, "first_name": "Анна", "is_bot": false],
+            mediaKey: media
+        ]
+        if let caption { message["caption"] = caption }
+        return ["update_id": id, "message": message]
+    }
+
+    func testTelegramVoiceReachesRealMaxSendSeamWithoutCaption() async {
+        let max = MockMaxWeb()
+        let model = makeModel(max: max)
+        let now = Int(Date().timeIntervalSince1970)
+        let opusOgg = Data([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]) // "OggS" header
+        ScriptedTelegramProtocol.queue(files: ["VOICE-1": opusOgg])
+        ScriptedTelegramProtocol.queue(updates: [
+            [],
+            [mediaUpdate(id: 60, date: now + 1, mediaKey: "voice",
+                         media: ["file_id": "VOICE-1", "file_size": opusOgg.count, "duration": 3])]
+        ])
+
+        await model.start()
+        await waitFor { max.sentMedia.count == 1 }
+
+        guard let sent = max.sentMedia.first else { model.stopByUser(); return }
+        XCTAssertEqual(sent.kind.rawValue, "file", "MAX has no verified native voice attach; FILE is the playable fallback")
+        XCTAssertEqual(sent.fileName, "voice.ogg")
+        XCTAssertEqual(sent.mime, "audio/ogg")
+        XCTAssertEqual(sent.data, opusOgg, "Opus/Ogg bytes must arrive unchanged")
+        XCTAssertEqual(sent.text, "Анна:\n", "the author label is kept even with an empty caption")
+        let snapshot = ScriptedTelegramProtocol.snapshot()
+        XCTAssertEqual(snapshot.getFileIDs, ["VOICE-1"], "download must use the Telegram file_id")
+        XCTAssertEqual(snapshot.downloadedPaths, ["VOICE-1"])
+        XCTAssertFalse(snapshot.methods.contains("sendMessage"), "Telegram → MAX must not send back via Telegram")
+        XCTAssertEqual(model.count, 1)
+        XCTAssertTrue(model.running)
+        model.stopByUser()
+    }
+
+    func testTelegramVideoNoteReachesRealMaxSendSeamWithoutCaption() async {
+        let max = MockMaxWeb()
+        let model = makeModel(max: max)
+        let now = Int(Date().timeIntervalSince1970)
+        let mp4 = Data([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]) // ftyp/isom
+        ScriptedTelegramProtocol.queue(files: ["VIDEONOTE-1": mp4])
+        ScriptedTelegramProtocol.queue(updates: [
+            [],
+            [mediaUpdate(id: 61, date: now + 1, mediaKey: "video_note",
+                         media: ["file_id": "VIDEONOTE-1", "file_size": mp4.count, "duration": 5, "length": 240])]
+        ])
+
+        await model.start()
+        await waitFor { max.sentMedia.count == 1 }
+
+        guard let sent = max.sentMedia.first else { model.stopByUser(); return }
+        XCTAssertEqual(sent.kind.rawValue, "video", "a round note falls back to an ordinary MAX video")
+        XCTAssertEqual(sent.fileName, "video_note.mp4")
+        XCTAssertEqual(sent.mime, "video/mp4")
+        XCTAssertEqual(sent.data, mp4, "MP4 bytes must arrive unchanged")
+        XCTAssertEqual(sent.text, "Анна:\n")
+        let snapshot = ScriptedTelegramProtocol.snapshot()
+        XCTAssertEqual(snapshot.getFileIDs, ["VIDEONOTE-1"])
+        XCTAssertEqual(snapshot.downloadedPaths, ["VIDEONOTE-1"])
+        XCTAssertEqual(model.count, 1)
+        model.stopByUser()
+    }
+
+    func testTelegramVoiceWithCaptionKeepsAuthorAndCaption() async {
+        let max = MockMaxWeb()
+        let model = makeModel(max: max)
+        let now = Int(Date().timeIntervalSince1970)
+        let bytes = Data("opus".utf8)
+        ScriptedTelegramProtocol.queue(files: ["VOICE-CAP": bytes])
+        ScriptedTelegramProtocol.queue(updates: [
+            [],
+            [mediaUpdate(id: 62, date: now + 1, mediaKey: "voice",
+                         media: ["file_id": "VOICE-CAP", "file_size": bytes.count], caption: "слушай")]
+        ])
+
+        await model.start()
+        await waitFor { max.sentMedia.count == 1 }
+
+        guard let sent = max.sentMedia.first else { model.stopByUser(); return }
+        XCTAssertEqual(sent.text, "Анна:\nслушай")
+        XCTAssertEqual(sent.data, bytes)
+        XCTAssertEqual(max.sentTexts, [], "the caption rides with the media, not as a second message")
+        model.stopByUser()
+    }
+
+    func testExistingGIFVideoAndDocumentKindsAreUnchanged() async {
+        let max = MockMaxWeb()
+        let model = makeModel(max: max)
+        let now = Int(Date().timeIntervalSince1970)
+        let bytes = Data("payload".utf8)
+        ScriptedTelegramProtocol.queue(files: [
+            "GIF-1": bytes, "VIDEO-1": bytes, "DOC-1": bytes
+        ])
+        ScriptedTelegramProtocol.queue(updates: [
+            [],
+            [
+                mediaUpdate(id: 63, date: now + 1, mediaKey: "animation",
+                            media: ["file_id": "GIF-1", "file_name": "anim.gif", "mime_type": "image/gif"]),
+                mediaUpdate(id: 64, date: now + 2, mediaKey: "video",
+                            media: ["file_id": "VIDEO-1", "mime_type": "video/mp4"]),
+                mediaUpdate(id: 65, date: now + 3, mediaKey: "document",
+                            media: ["file_id": "DOC-1", "file_name": "report.pdf", "mime_type": "application/pdf"])
+            ]
+        ])
+
+        await model.start()
+        await waitFor { max.sentMedia.count >= 3 }
+
+        XCTAssertEqual(max.sentMedia.map { $0.kind.rawValue }, ["file", "video", "file"],
+                       "GIF → FILE, video → VIDEO, document → FILE must not regress")
+        XCTAssertEqual(max.sentMedia.map(\.fileName), ["anim.gif", "video.mp4", "report.pdf"])
+        XCTAssertEqual(max.sentMedia.map(\.mime), ["image/gif", "video/mp4", "application/pdf"])
+        XCTAssertEqual(model.count, 3)
+        model.stopByUser()
+    }
+
+    func testOversizedVoiceIsSkippedExplicitlyWithoutStoppingTheBridge() async {
+        let max = MockMaxWeb()
+        let model = makeModel(max: max)
+        let now = Int(Date().timeIntervalSince1970)
+        ScriptedTelegramProtocol.queue(updates: [
+            [],
+            [mediaUpdate(id: 66, date: now + 1, mediaKey: "voice",
+                         media: ["file_id": "BIG-VOICE", "file_size": 20 * 1024 * 1024 + 1],
+                         caption: "важное")]
+        ])
+
+        await model.start()
+        await waitFor { max.sentTexts.contains { $0.contains("важное") } }
+
+        XCTAssertTrue(max.sentMedia.isEmpty, "a >20 MB file must not be downloaded or sent")
+        XCTAssertEqual(max.sentTexts, ["Анна:\nважное"], "its caption must still be relayed")
+        XCTAssertTrue(model.status.contains("20 МБ"), "the skip must be visible, not silent")
+        XCTAssertTrue(ScriptedTelegramProtocol.snapshot().getFileIDs.isEmpty)
+        XCTAssertTrue(model.running, "one oversized attachment must not stop the bridge")
         model.stopByUser()
     }
 }
