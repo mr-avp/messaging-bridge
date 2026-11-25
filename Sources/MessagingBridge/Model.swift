@@ -44,6 +44,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
     @Published var autoStart = false
     @Published var autoRelay = false
     @Published var autoRecover = false
+    @Published var autoOpenChat = false
     @Published var recovering = false
     @Published var selectedSection: AppSection = .bridge
     @Published var maxPanelVisible: Bool = true
@@ -84,9 +85,44 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         }
         loadConnections()
         loadSettings()
+        // Cold start: arm the target before AppDelegate calls openMAX(), so the
+        // very first navigation already uses the saved connection when opted in.
+        syncAutoOpenTarget()
         registerWakeObserver()
     }
-    func openMAX() { max.load() }
+    /// Validated ID of the selected *saved* connection, or nil. Never derived
+    /// from a live-discovered chat or from free-form input.
+    var savedMaxID: String? {
+        guard let id = connectionID else { return nil }
+        return connections.first(where: { $0.id == id }).flatMap { MaxWeb.validatedChatID($0.maxID) }
+    }
+    private var autoOpenTarget: String? { autoOpenChat ? savedMaxID : nil }
+    private func syncAutoOpenTarget() {
+        max.setDesiredChatID(autoOpenTarget)
+    }
+    /// One-shot manual navigation to the saved group. Independent of the
+    /// opt-in flag: the button is an explicit action, not automatic behavior.
+    /// The manual target is armed only for this load and immediately replaced
+    /// by the policy-derived target, so later automatic loads never inherit it.
+    func openSavedMaxGroup() {
+        guard let id = savedMaxID else { return }
+        max.setDesiredChatID(id)
+        max.load()
+        syncAutoOpenTarget()
+    }
+    /// Wake/disconnected/recovery reload. A chat URL does not prove the socket
+    /// is alive, so never skip a reload just because the path already matches.
+    /// Re-derive the target from the opt-in flag and the saved connection on
+    /// every call: no leftover one-shot manual target may leak into recovery.
+    /// Never called from `ready` or `nav`.
+    func reloadMAXIfNeeded() {
+        syncAutoOpenTarget()
+        max.load()
+    }
+    func openMAX() {
+        syncAutoOpenTarget()
+        max.load()
+    }
     private func registerWakeObserver() {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
@@ -100,7 +136,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         guard autoRecover, !userStopped, !recoveryBlocked else { return }
         // Real MAX reload with backoff; do not just wait for ready forever.
         maxReady = false
-        max.load()
+        reloadMAXIfNeeded()
         if running {
             stop("MAX перезагружается после выхода из сна.", manual: false)
         }
@@ -186,7 +222,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
             let wasReady = maxReady
             maxReady = false
             if wasReady { eventLog.record(.maxDisconnect) }
-            max.load()
+            reloadMAXIfNeeded()
             if autoRecover, !userStopped, !recoveryBlocked {
                 stop("MAX отключился. Восстановление будет выполнено автоматически.", manual: false)
                 scheduleRecovery(reason: "MAX отключился")
@@ -340,6 +376,14 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         autoStart = defaults.bool(forKey: "messaging-bridge.auto-start")
         autoRelay = defaults.bool(forKey: "messaging-bridge.auto-relay")
         autoRecover = defaults.bool(forKey: "messaging-bridge.auto-recover")
+        autoOpenChat = defaults.bool(forKey: "messaging-bridge.auto-open-chat")
+    }
+    func setAutoOpenChat(_ enabled: Bool) {
+        autoOpenChat = enabled
+        defaults.set(enabled, forKey: "messaging-bridge.auto-open-chat")
+        // Enabling arms the saved target; disabling clears it so the next load
+        // goes back to the root. No navigation is forced either way.
+        syncAutoOpenTarget()
     }
     func setAutoStart(
         _ enabled: Bool,
@@ -448,25 +492,32 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
         connections.append(connection)
         connectionID = connection.id
         persistConnections()
+        syncAutoOpenTarget()
     }
     func selectConnection(_ id: UUID?) {
         guard !running, !busy else { return }
         connectionID = id
-        guard let id, let connection = connections.first(where: { $0.id == id }) else { return }
+        guard let id, let connection = connections.first(where: { $0.id == id }) else {
+            syncAutoOpenTarget()
+            return
+        }
         maxID = connection.maxID
         tgID = connection.tgID
+        syncAutoOpenTarget()
     }
     func newConnection() {
         guard !running, !busy else { return }
         connectionID = nil
         maxID = ""
         tgID = ""
+        syncAutoOpenTarget()
     }
     func deleteConnection() {
         guard !running, !busy, let id = connectionID else { return }
         connections.removeAll { $0.id == id }
         connectionID = nil
         persistConnections()
+        syncAutoOpenTarget()
     }
     private func updateConnectionTitles() {
         var changed = false
@@ -822,7 +873,7 @@ struct RelayMessage { let id: String; let chat: String; let sender: String; let 
                 // Real MAX reload when not ready: reload page, then wait for ready with backoff.
                 let needsReload = await MainActor.run { !self.maxReady }
                 if needsReload {
-                    await MainActor.run { self.max.load() }
+                    await MainActor.run { self.reloadMAXIfNeeded() }
                 }
                 // Try to restore Telegram if needed.
                 await self.restoreAndConnectIfPossible()

@@ -17,8 +17,42 @@ enum MaxMediaKind: String { case photo, video, file }
         return web
     }()
     private var didAutoLoad = false
+    /// Validated target chat for the next load. Only a decimal MAX chat ID
+    /// (optionally signed) is accepted; anything else keeps the root URL.
+    /// This is set by the Model from the selected *saved* connection only.
+    private(set) var desiredChatID: String?
+    static func validatedChatID(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.count <= 32 else { return nil }
+        let digits = raw.hasPrefix("-") ? raw.dropFirst() : raw[...]
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+        return raw
+    }
+    /// One funnel for every MAX navigation: root by default, `https://web.max.ru/<id>`
+    /// when a valid saved chat ID was armed. No string interpolation of raw input.
+    static func url(forChatID raw: String?) -> URL {
+        guard let id = validatedChatID(raw) else { return endpoint }
+        return endpoint.appendingPathComponent(id, isDirectory: false)
+    }
+    func setDesiredChatID(_ raw: String?) {
+        desiredChatID = Self.validatedChatID(raw)
+    }
+    /// Pure path check, kept separate so it can be tested without WebKit.
+    static func isChatPath(_ path: String, matching id: String?) -> Bool {
+        if let id { return path == "/\(id)" }
+        return path.isEmpty || path == "/"
+    }
+    /// True when the web view already sits at the desired path. Only a manual
+    /// transition may treat this as a no-op: wake/disconnect/recovery must
+    /// always force a real reload because the URL says nothing about the socket.
+    func isAtDesiredChat() -> Bool {
+        Self.isChatPath(view.url?.path ?? "", matching: desiredChatID)
+    }
     func load() {
-        view.load(URLRequest(url: Self.endpoint))
+        // An explicit load (startup, manual button, wake, recovery) is the
+        // single navigation. Mark autoLoad done so mounting the panel cannot
+        // immediately issue a second, identical navigation.
+        didAutoLoad = true
+        view.load(URLRequest(url: Self.url(forChatID: desiredChatID)))
     }
     func autoLoad() {
         guard !didAutoLoad else { return }
